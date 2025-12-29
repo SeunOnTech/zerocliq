@@ -1,0 +1,12 @@
+{
+    "rules": [
+        {
+            "pathPattern": "/market/order/**",
+            "apiPath": "https://zero-slip-psi.vercel.app/api/actions/take-order"
+        },
+        {
+            "pathPattern": "/api/actions/**",
+            "apiPath": "https://zero-slip-psi.vercel.app/api/actions/**"
+        }
+    ]
+}

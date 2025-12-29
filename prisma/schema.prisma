@@ -1,0 +1,250 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id                     String             @id @default(cuid())
+  walletAddress          String
+  email                  String?            @unique
+  hasCompletedOnboarding Boolean            @default(false)
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
+  chainId                Int
+  chainName              String?
+  onboardingStep         Int                @default(1)
+  smartAccountAddress    String?
+  smartAccountStatus     SmartAccountStatus @default(NONE)
+  deploymentTxHash       String?
+  avatarUrl              String?
+  Activity               Activity[]
+  notifications          Notification[]
+  smartCards             SmartCard[]
+  cardStacks             CardStack[]
+
+  @@unique([walletAddress, chainId], name: "walletAddress_chainId")
+}
+
+model Notification {
+  id            String           @id @default(cuid())
+  walletAddress String
+  chainId       Int
+  type          NotificationType
+  title         String
+  message       String
+  metadata      Json             @default("{}")
+  read          Boolean          @default(false)
+  createdAt     DateTime         @default(now())
+  user          User             @relation(fields: [walletAddress, chainId], references: [walletAddress, chainId], onDelete: Cascade)
+
+  @@index([walletAddress, chainId, createdAt(sort: Desc)])
+  @@index([walletAddress, chainId, read])
+}
+
+model SmartCard {
+  id                 String                 @id @default(cuid())
+  userId             String
+  chainId            Int
+  delegatorAddress   String
+  delegateAddress    String
+  delegationStruct   Json
+  signature          String?
+  whitelistedRouters Json
+  tokenLimits        Json
+  status             SmartCardStatus        @default(PENDING)
+  createdAt          DateTime               @default(now())
+  expiresAt          DateTime?
+  revokedAt          DateTime?
+  updatedAt          DateTime               @updatedAt
+  name               String?
+  type               SmartCardType
+  user               User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  spending           SmartCardSpending[]
+  transactions       SmartCardTransaction[]
+
+  @@unique([userId, chainId, type], name: "userId_chainId_type")
+  @@index([userId, chainId])
+  @@index([delegatorAddress, chainId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([type])
+}
+
+model SmartCardTransaction {
+  id              String          @id @default(cuid())
+  smartCardId     String
+  tokenAddress    String
+  amount          String
+  transactionType TransactionType
+  transactionHash String          @unique
+  dexId           String?
+  routerAddress   String?
+  timestamp       DateTime        @default(now())
+  blockNumber     Int?
+  smartCard       SmartCard       @relation(fields: [smartCardId], references: [id], onDelete: Cascade)
+
+  @@index([smartCardId, timestamp])
+  @@index([transactionHash])
+  @@index([timestamp])
+}
+
+model SmartCardSpending {
+  id            String    @id @default(cuid())
+  smartCardId   String
+  tokenAddress  String
+  dailySpent    String    @default("0")
+  totalSpent    String    @default("0")
+  lastResetDate DateTime  @default(now())
+  smartCard     SmartCard @relation(fields: [smartCardId], references: [id], onDelete: Cascade)
+
+  @@unique([smartCardId, tokenAddress])
+  @@index([smartCardId])
+}
+
+model Activity {
+  id            String         @id
+  walletAddress String
+  chainId       Int
+  type          ActivityType
+  status        ActivityStatus
+  title         String
+  description   String
+  metadata      Json           @default("{}")
+  txHash        String?
+  createdAt     DateTime       @default(now())
+  User          User           @relation(fields: [walletAddress, chainId], references: [walletAddress, chainId], onDelete: Cascade)
+
+  @@index([txHash])
+  @@index([walletAddress, chainId, createdAt(sort: Desc)])
+  @@index([walletAddress, chainId, type])
+}
+
+enum SmartAccountStatus {
+  NONE
+  COUNTERFACTUAL
+  DEPLOYED
+}
+
+enum NotificationType {
+  TRANSFER_SUCCESS
+  TRANSFER_FAILED
+  SMART_ACCOUNT_FUNDED
+  SMART_ACCOUNT_DEPLOYED
+  SWAP_SUCCESS
+  SWAP_FAILED
+  BRIDGE_SUCCESS
+  BRIDGE_FAILED
+  SYSTEM_ALERT
+  SWAP_PENDING
+  CARD_STACK_CREATED
+  CARD_STACK_EXPIRED
+  DCA_EXECUTED
+  DCA_FAILED
+  PERMISSION_EXPIRING
+  PERMISSION_EXPIRED
+  SYSTEM_INFO
+}
+
+enum SmartCardStatus {
+  PENDING
+  ACTIVE
+  EXPIRED
+  REVOKED
+  LIMIT_REACHED
+}
+
+enum SmartCardType {
+  TRADING
+  REBALANCING
+  STAKING
+  GOVERNANCE
+}
+
+enum TransactionType {
+  TRANSFER
+  APPROVE
+  SWAP
+}
+
+enum ActivityStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
+enum ActivityType {
+  SWAP
+  TRANSFER
+  SMART_ACCOUNT_DEPLOY
+  SMART_ACCOUNT_FUND
+  CARD_STACK_CREATE
+  CARD_STACK_PAUSE
+  CARD_STACK_RESUME
+  DCA_EXECUTION
+  APPROVAL
+  BRIDGE
+}
+
+// ============================================
+// NEW: CARD STACK MODELS (Advanced Permissions)
+// ============================================
+
+model CardStack {
+  id                String       @id @default(cuid())
+  userId            String
+  user              User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Permission Context (The "One Signature")
+  permissionsContext String      @db.Text
+  delegationManager  String
+  
+  // Master Budget Config
+  tokenAddress      String
+  tokenSymbol       String
+  tokenDecimals     Int          @default(18)
+  totalBudget       String       // e.g. "100000000" (wei)
+  periodDuration    Int          // Seconds (e.g. 86400)
+
+  subCards          SubCard[]
+  
+  status            StackStatus  @default(ACTIVE)
+  createdAt         DateTime     @default(now())
+  expiresAt         DateTime
+  
+  @@index([userId])
+}
+
+model SubCard {
+  id                String       @id @default(cuid())
+  stackId           String
+  stack             CardStack    @relation(fields: [stackId], references: [id], onDelete: Cascade)
+  
+  type              SubCardType
+  name              String
+  color             String
+  
+  allocationPercent Int
+  currentSpent      String       @default("0")
+  
+  config            Json         @default("{}")
+  
+  status            StackStatus  @default(ACTIVE)
+  createdAt         DateTime     @default(now())
+  
+  @@index([stackId])
+}
+
+enum StackStatus {
+  ACTIVE
+  PAUSED
+  EXPIRED
+}
+
+enum SubCardType {
+  DCA_BOT
+  LIMIT_ORDER
+  MANUAL_TRADING
+}
