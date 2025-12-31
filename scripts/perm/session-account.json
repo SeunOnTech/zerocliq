@@ -1,0 +1,6 @@
+{
+    "description": "Session Account Configuration - The account that will execute transfers on behalf of users",
+    "privateKey": "0xc5860afb63ec936e1e6e64934fea632623ca0a1686e777a336e5eb570a330d27",
+    "deploySalt": "0x",
+    "note": "Generate a private key with: node -e \"console.log('0x' + require('crypto').randomBytes(32).toString('hex'))\""
+}

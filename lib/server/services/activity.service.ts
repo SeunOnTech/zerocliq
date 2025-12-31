@@ -418,3 +418,45 @@ export async function logApprovalActivity(
         }
     })
 }
+
+/**
+ * Log limit order creation activity
+ */
+export async function logLimitOrderCreateActivity(
+    walletAddress: string,
+    chainId: number,
+    data: {
+        status: ActivityStatus
+        stackName: string
+        targetToken: string
+        targetPrice: string
+        amount: string
+        sourceToken: string
+        condition: 'BELOW' | 'ABOVE'
+        error?: string
+    }
+) {
+    const conditionText = data.condition === 'BELOW' ? 'drops to' : 'rises to'
+    return logActivity({
+        walletAddress,
+        chainId,
+        type: 'LIMIT_ORDER_CREATE',
+        status: data.status,
+        title: data.status === 'SUCCESS' ? 'Limit Order Created' : data.status === 'PENDING' ? 'Creating Limit Order' : 'Limit Order Failed',
+        description: data.status === 'SUCCESS'
+            ? `Set to buy ${data.targetToken} when price ${conditionText} $${data.targetPrice}`
+            : data.status === 'PENDING'
+                ? `Creating limit order for ${data.targetToken}...`
+                : `Failed to create limit order: ${data.error}`,
+        metadata: {
+            stackName: data.stackName,
+            targetToken: data.targetToken,
+            targetPrice: data.targetPrice,
+            amount: data.amount,
+            sourceToken: data.sourceToken,
+            condition: data.condition,
+            error: data.error,
+        }
+    })
+}
+

@@ -17,8 +17,8 @@ import {
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useAppStore } from '@/store/useAppStore'
-import { useAccount, useBalance, useSendTransaction, useWaitForTransactionReceipt } from 'wagmi'
-import { parseEther, formatEther } from 'viem'
+import { useAccount, useBalance, useSendTransaction, useWaitForTransactionReceipt, useWriteContract } from 'wagmi'
+import { parseEther, formatEther, parseUnits, formatUnits, erc20Abi } from 'viem'
 import { toast } from '@/components/ui/toast'
 import confetti from 'canvas-confetti'
 import { getExplorerTxUrl } from '@/lib/chains'
@@ -81,12 +81,16 @@ export function FundingModal({
     const [amount, setAmount] = useState(requiredAmount || '')
     const [errorMessage, setErrorMessage] = useState('')
 
-    // Get EOA native balance
-    const { data: eoaBalance } = useBalance({
+    // Determine if we are using native token (ETH) or ERC-20
+    const isNative = !preselectedToken || preselectedToken.address === '0x0000000000000000000000000000000000000000'
+
+    // Get Balance (Native or Token)
+    const { data: balanceData } = useBalance({
         address: address,
+        token: isNative ? undefined : (preselectedToken.address as `0x${string}`),
     })
 
-    // Transaction hooks
+    // Transaction hooks (Native)
     const {
         data: txHash,
         sendTransaction,
@@ -95,12 +99,23 @@ export function FundingModal({
         reset: resetTx
     } = useSendTransaction()
 
+    // Transaction hooks (ERC-20)
+    const {
+        data: writeHash,
+        writeContract,
+        isPending: isWriting,
+        error: writeError,
+        reset: resetWrite
+    } = useWriteContract()
+
+    const activeHash = txHash || writeHash
+
     const {
         isLoading: isConfirming,
         isSuccess: isConfirmed,
         error: confirmError
     } = useWaitForTransactionReceipt({
-        hash: txHash,
+        hash: activeHash,
     })
 
     // Reset state when modal opens
@@ -111,8 +126,9 @@ export function FundingModal({
             setAmount(requiredAmount || '')
             setErrorMessage('')
             resetTx()
+            resetWrite()
         }
-    }, [isOpen, requiredAmount, resetTx])
+    }, [isOpen, requiredAmount, resetTx, resetWrite])
 
     // Handle transaction confirmation
     useEffect(() => {
@@ -131,7 +147,7 @@ export function FundingModal({
 
             // Log notification and activity
             if (address && chainId) {
-                const tokenSymbol = preselectedToken?.symbol || eoaBalance?.symbol || 'ETH'
+                const tokenSymbol = preselectedToken?.symbol || balanceData?.symbol || 'ETH'
 
                 createNotification({
                     walletAddress: address,
@@ -140,7 +156,7 @@ export function FundingModal({
                     title: 'Smart Account Funded',
                     message: `Deposited ${amount} ${tokenSymbol} to Smart Account`,
                     metadata: {
-                        txHash,
+                        txHash: activeHash,
                         amount,
                         token: tokenSymbol,
                     }
@@ -153,7 +169,7 @@ export function FundingModal({
                     status: 'SUCCESS',
                     title: 'Smart Account Funded',
                     description: `Deposited ${amount} ${tokenSymbol} to Smart Account`,
-                    txHash: txHash || undefined,
+                    txHash: activeHash || undefined,
                     metadata: {
                         amount,
                         token: tokenSymbol,
@@ -161,16 +177,16 @@ export function FundingModal({
                 })
             }
         }
-    }, [isConfirmed, step, onSuccess, address, chainId, amount, txHash, preselectedToken?.symbol, eoaBalance?.symbol])
+    }, [isConfirmed, step, onSuccess, address, chainId, amount, activeHash, preselectedToken?.symbol, balanceData?.symbol])
 
     // Handle errors
     useEffect(() => {
-        if (sendError || confirmError) {
-            const error = sendError || confirmError
+        if (sendError || confirmError || writeError) {
+            const error = sendError || confirmError || writeError
             setErrorMessage(error?.message || 'Transaction failed')
             setStep('error')
         }
-    }, [sendError, confirmError])
+    }, [sendError, confirmError, writeError])
 
     // Handle method selection
     const handleSelectMethod = (selectedMethod: FundingMethod) => {
@@ -189,10 +205,19 @@ export function FundingModal({
         setErrorMessage('')
 
         try {
-            sendTransaction({
-                to: smartAccountAddress as `0x${string}`,
-                value: parseEther(amount),
-            })
+            if (isNative) {
+                sendTransaction({
+                    to: smartAccountAddress as `0x${string}`,
+                    value: parseEther(amount),
+                })
+            } else {
+                writeContract({
+                    address: preselectedToken!.address as `0x${string}`,
+                    abi: erc20Abi,
+                    functionName: 'transfer',
+                    args: [smartAccountAddress as `0x${string}`, parseUnits(amount, preselectedToken!.decimals)],
+                })
+            }
         } catch (error: any) {
             setErrorMessage(error.message || 'Failed to initiate transfer')
             setStep('error')
@@ -201,16 +226,20 @@ export function FundingModal({
 
     // Handle max button
     const handleMax = () => {
-        if (eoaBalance) {
-            // Leave a small amount for gas
-            const maxAmount = Math.max(0, parseFloat(formatEther(eoaBalance.value)) - 0.001)
-            setAmount(maxAmount.toFixed(6))
+        if (balanceData) {
+            // Leave a small amount for gas only if it's native token
+            const balance = parseFloat(formatUnits(balanceData.value, balanceData.decimals))
+            const maxAmount = isNative
+                ? Math.max(0, balance - 0.001)
+                : balance
+
+            setAmount(maxAmount.toString())
         }
     }
 
     // Calculate shortfall
     const requiredNum = parseFloat(requiredAmount || '0')
-    const currentBalance = parseFloat(eoaBalance ? formatEther(eoaBalance.value) : '0')
+    const currentBalance = parseFloat(balanceData ? formatUnits(balanceData.value, balanceData.decimals) : '0')
     const shortfall = requiredNum > 0 ? (requiredNum - currentBalance).toFixed(4) : null
 
     if (!isOpen) return null
@@ -281,9 +310,9 @@ export function FundingModal({
                                                     <div className="text-sm text-muted-foreground">
                                                         Send tokens from your connected wallet
                                                     </div>
-                                                    {eoaBalance && (
+                                                    {balanceData && (
                                                         <div className="text-xs text-muted-foreground mt-1">
-                                                            Balance: {parseFloat(formatEther(eoaBalance.value)).toFixed(4)} {eoaBalance.symbol}
+                                                            Balance: {parseFloat(formatUnits(balanceData.value, balanceData.decimals)).toFixed(4)} {balanceData.symbol}
                                                         </div>
                                                     )}
                                                 </div>
@@ -360,10 +389,10 @@ export function FundingModal({
                                                     </div>
                                                     <div className="text-right">
                                                         <div className="text-sm font-semibold">
-                                                            {eoaBalance ? parseFloat(formatEther(eoaBalance.value)).toFixed(4) : '0.0000'}
+                                                            {balanceData ? parseFloat(formatUnits(balanceData.value, balanceData.decimals)).toFixed(4) : '0.0000'}
                                                         </div>
                                                         <div className="text-xs text-muted-foreground">
-                                                            {eoaBalance?.symbol || 'ETH'}
+                                                            {balanceData?.symbol || 'ETH'}
                                                         </div>
                                                     </div>
                                                 </div>
@@ -422,12 +451,12 @@ export function FundingModal({
                                                             <TokenLogo logoURI={preselectedToken.logoURI} symbol={preselectedToken.symbol} />
                                                         ) : (
                                                             <div className="w-full h-full rounded-full bg-primary/20 flex items-center justify-center text-[10px] font-bold">
-                                                                {eoaBalance?.symbol?.slice(0, 2) || 'ET'}
+                                                                {balanceData?.symbol?.slice(0, 2) || 'ET'}
                                                             </div>
                                                         )}
                                                     </div>
                                                     <span className="text-sm font-semibold">
-                                                        {preselectedToken?.symbol || eoaBalance?.symbol || 'ETH'}
+                                                        {preselectedToken?.symbol || balanceData?.symbol || 'ETH'}
                                                     </span>
                                                 </div>
                                             </div>
@@ -479,22 +508,22 @@ export function FundingModal({
                                             <Loader2 className="w-8 h-8 text-primary animate-spin" />
                                         </div>
                                         <h3 className="text-lg font-bold text-foreground mb-2">
-                                            {isSending ? 'Confirm in Wallet' : 'Processing Transfer'}
+                                            {isSending || isWriting ? 'Confirm in Wallet' : 'Processing Transfer'}
                                         </h3>
                                         <p className="text-sm text-muted-foreground mb-4">
-                                            {isSending
+                                            {isSending || isWriting
                                                 ? 'Please confirm the transaction in your wallet'
                                                 : 'Your transfer is being confirmed on the blockchain'}
                                         </p>
 
                                         {/* Progress Steps */}
                                         <div className="flex justify-center gap-2 mt-6">
-                                            <div className={`w-3 h-3 rounded-full transition-colors ${isSending ? 'bg-primary animate-pulse' : 'bg-primary'}`} />
-                                            <div className={`w-3 h-3 rounded-full transition-colors ${isConfirming ? 'bg-primary animate-pulse' : isSending ? 'bg-muted' : 'bg-primary'}`} />
+                                            <div className={`w-3 h-3 rounded-full transition-colors ${isSending || isWriting ? 'bg-primary animate-pulse' : 'bg-primary'}`} />
+                                            <div className={`w-3 h-3 rounded-full transition-colors ${isConfirming ? 'bg-primary animate-pulse' : isSending || isWriting ? 'bg-muted' : 'bg-primary'}`} />
                                             <div className="w-3 h-3 rounded-full bg-muted" />
                                         </div>
                                         <div className="flex justify-center gap-4 mt-2 text-xs text-muted-foreground">
-                                            <span className={isSending ? 'text-primary font-medium' : ''}>Sign</span>
+                                            <span className={isSending || isWriting ? 'text-primary font-medium' : ''}>Sign</span>
                                             <span className={isConfirming ? 'text-primary font-medium' : ''}>Confirm</span>
                                             <span>Done</span>
                                         </div>
@@ -517,12 +546,12 @@ export function FundingModal({
                                             Funds Transferred!
                                         </h3>
                                         <p className="text-sm text-muted-foreground mb-6">
-                                            <strong>{amount} {eoaBalance?.symbol || 'ETH'}</strong> has been sent to your Smart Account
+                                            <strong>{amount} {balanceData?.symbol || 'ETH'}</strong> has been sent to your Smart Account
                                         </p>
 
-                                        {txHash && (
+                                        {activeHash && (
                                             <a
-                                                href={chainId ? getExplorerTxUrl(chainId, txHash) : '#'}
+                                                href={chainId ? getExplorerTxUrl(chainId, activeHash) : '#'}
                                                 target="_blank"
                                                 rel="noopener noreferrer"
                                                 className="inline-flex items-center gap-1 text-sm text-primary hover:underline mb-6"
@@ -571,6 +600,7 @@ export function FundingModal({
                                             <Button
                                                 onClick={() => {
                                                     resetTx()
+                                                    resetWrite()
                                                     setStep('amount')
                                                     setErrorMessage('')
                                                 }}

@@ -11,6 +11,11 @@ export interface CreateStackData {
     totalBudget: string
     periodDuration: number
     expiresAt: string // ISO date string from frontend
+    // DCA Config
+    targetTokenAddress?: string
+    targetTokenSymbol?: string
+    targetTokenDecimals?: number
+    amountPerExecution?: string
     subCards: {
         type: SubCardType
         name: string
@@ -51,8 +56,14 @@ export const CardStackService = {
                 tokenDecimals: data.tokenDecimals || 18,
                 totalBudget: data.totalBudget,
                 periodDuration: data.periodDuration,
+                periodDuration: data.periodDuration,
                 status: StackStatus.ACTIVE,
                 expiresAt: expiryDate,
+                // DCA Config
+                targetTokenAddress: data.targetTokenAddress,
+                targetTokenSymbol: data.targetTokenSymbol,
+                targetTokenDecimals: data.targetTokenDecimals,
+                amountPerExecution: data.amountPerExecution,
                 subCards: {
                     create: data.subCards.map(card => ({
                         type: card.type,

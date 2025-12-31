@@ -374,3 +374,35 @@ export async function notifySystem(
         metadata: {}
     })
 }
+
+/**
+ * Send limit order created notification
+ */
+export async function notifyLimitOrderCreated(
+    walletAddress: string,
+    chainId: number,
+    data: {
+        targetToken: string
+        targetPrice: string
+        amount: string
+        sourceToken: string
+        condition: 'BELOW' | 'ABOVE'
+    }
+) {
+    const conditionText = data.condition === 'BELOW' ? 'drops to' : 'rises to'
+    return createNotification({
+        walletAddress,
+        chainId,
+        type: 'LIMIT_ORDER_CREATED',
+        title: 'Limit Order Set',
+        message: `Bot will buy ${data.targetToken} when price ${conditionText} $${data.targetPrice}`,
+        metadata: {
+            targetToken: data.targetToken,
+            targetPrice: data.targetPrice,
+            amount: data.amount,
+            sourceToken: data.sourceToken,
+            condition: data.condition,
+        }
+    })
+}
+

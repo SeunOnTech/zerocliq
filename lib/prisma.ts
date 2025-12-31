@@ -11,7 +11,7 @@ const connectionString = process.env.DATABASE_URL as string;
 const pool = new Pool({
     connectionString: connectionString ? connectionString.replace(/\?.*$/, '') : '', // Remove query params from connection string
     ssl: {
-        rejectUnauthorized: true, // Must be true for Aiven cloud
+        rejectUnauthorized: false, // Must be true for Aiven cloud
         ca: process.env.CA_CERTIFICATE, // Your inline certificate here!
     },
 });

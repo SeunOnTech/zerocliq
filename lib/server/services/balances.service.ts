@@ -44,7 +44,7 @@ export class BalancesService {
             const viemChain = getViemChain(chainId);
             const client = createPublicClient({
                 chain: viemChain,
-                transport: http()
+                transport: http(chainConfig.rpcUrl) // Use configured RPC
             });
 
             const tokens = chainConfig.tokens;

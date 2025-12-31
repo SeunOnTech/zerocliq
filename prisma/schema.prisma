@@ -21,9 +21,9 @@ model User {
   deploymentTxHash       String?
   avatarUrl              String?
   Activity               Activity[]
+  cardStacks             CardStack[]
   notifications          Notification[]
   smartCards             SmartCard[]
-  cardStacks             CardStack[]
 
   @@unique([walletAddress, chainId], name: "walletAddress_chainId")
 }
@@ -122,6 +122,49 @@ model Activity {
   @@index([walletAddress, chainId, type])
 }
 
+model CardStack {
+  id                   String      @id @default(cuid())
+  userId               String
+  permissionsContext   String
+  delegationManager    String
+  tokenAddress         String
+  tokenSymbol          String
+  totalBudget          String
+  periodDuration       Int
+  status               StackStatus @default(ACTIVE)
+  createdAt            DateTime    @default(now())
+  expiresAt            DateTime
+  tokenDecimals        Int         @default(18)
+  
+  // DCA Target Token Configuration
+  targetTokenAddress   String?     // Token to swap into (e.g., WETH)
+  targetTokenSymbol    String?     // e.g., "ETH"
+  targetTokenDecimals  Int?        // For amount formatting
+  amountPerExecution   String?     // Amount of source token per DCA execution
+  
+  user                 User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subCards             SubCard[]
+
+  @@index([userId])
+}
+
+model SubCard {
+  id                String      @id @default(cuid())
+  stackId           String
+  type              SubCardType
+  name              String
+  color             String
+  allocationPercent Int
+  currentSpent      String      @default("0")
+  totalSpent        String      @default("0")
+  config            Json        @default("{}")
+  status            StackStatus @default(ACTIVE)
+  createdAt         DateTime    @default(now())
+  stack             CardStack   @relation(fields: [stackId], references: [id], onDelete: Cascade)
+
+  @@index([stackId])
+}
+
 enum SmartAccountStatus {
   NONE
   COUNTERFACTUAL
@@ -143,6 +186,7 @@ enum NotificationType {
   CARD_STACK_EXPIRED
   DCA_EXECUTED
   DCA_FAILED
+  LIMIT_ORDER_CREATED
   PERMISSION_EXPIRING
   PERMISSION_EXPIRED
   SYSTEM_INFO
@@ -184,57 +228,9 @@ enum ActivityType {
   CARD_STACK_PAUSE
   CARD_STACK_RESUME
   DCA_EXECUTION
+  LIMIT_ORDER_CREATE
   APPROVAL
   BRIDGE
-}
-
-// ============================================
-// NEW: CARD STACK MODELS (Advanced Permissions)
-// ============================================
-
-model CardStack {
-  id                String       @id @default(cuid())
-  userId            String
-  user              User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
-  // Permission Context (The "One Signature")
-  permissionsContext String      @db.Text
-  delegationManager  String
-  
-  // Master Budget Config
-  tokenAddress      String
-  tokenSymbol       String
-  tokenDecimals     Int          @default(18)
-  totalBudget       String       // e.g. "100000000" (wei)
-  periodDuration    Int          // Seconds (e.g. 86400)
-
-  subCards          SubCard[]
-  
-  status            StackStatus  @default(ACTIVE)
-  createdAt         DateTime     @default(now())
-  expiresAt         DateTime
-  
-  @@index([userId])
-}
-
-model SubCard {
-  id                String       @id @default(cuid())
-  stackId           String
-  stack             CardStack    @relation(fields: [stackId], references: [id], onDelete: Cascade)
-  
-  type              SubCardType
-  name              String
-  color             String
-  
-  allocationPercent Int
-  currentSpent      String       @default("0")
-  
-  config            Json         @default("{}")
-  
-  status            StackStatus  @default(ACTIVE)
-  createdAt         DateTime     @default(now())
-  
-  @@index([stackId])
 }
 
 enum StackStatus {

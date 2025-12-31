@@ -1,0 +1,6 @@
+{
+    "description": "User Configuration - The user who grants the delegation",
+    "userPrivateKey": "0x0c23f82f0c209762bbfa534ba286a8b995db5ab2513ec9b9c2f9fb924a416b14",
+    "chainId": 11155111,
+    "note": "This simulates a user granting permission. In production, the user signs via MetaMask."
+}

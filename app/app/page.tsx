@@ -18,19 +18,10 @@ import { useRouter } from "next/navigation"
 import { useAppStore } from "@/store/useAppStore"
 import { useActivityStore } from "@/hooks/useActivityStore"
 import { cn } from "@/lib/utils"
-import { useEffect } from "react"
+import { useState, useEffect } from "react"
 
 // Demo data for Permissions (leaving for now as requested primarily for Activity)
-const DEMO_PERMISSIONS = {
-    active: true,
-    totalBudget: 100,
-    usedToday: 42,
-    subCards: [
-        { id: 1, name: "DCA Bot", icon: "🤖", budget: 40, spent: 32, color: "#8B5CF6" },
-        { id: 2, name: "Limit Orders", icon: "📊", budget: 30, spent: 8, color: "#06B6D4" },
-        { id: 3, name: "Manual", icon: "✋", budget: 30, spent: 2, color: "#F97316" },
-    ]
-}
+
 
 // Animation variants
 const containerVariants = {
@@ -49,20 +40,38 @@ const itemVariants = {
 export default function AppHomePage() {
     const router = useRouter()
     const userProfile = useAppStore((s) => s.userProfile)
-    const balances = useAppStore((s) => s.balances)
+    const getBalances = useAppStore((s) => s.getBalances)
+    const balances = userProfile?.chainId ? getBalances(userProfile.chainId, 'smartAccount') : []
 
     // Connect to Activity Store
     const { activities, fetchActivities, isLoading: isActivityLoading } = useActivityStore()
 
     // Fetch activities on load
+    const [stacks, setStacks] = useState<any[]>([])
+    const [isLoadingStacks, setIsLoadingStacks] = useState(true)
+
+    // Fetch activities and stacks on load
     useEffect(() => {
         if (userProfile?.walletAddress && userProfile?.chainId) {
             fetchActivities(userProfile.walletAddress, userProfile.chainId)
+
+            // Fetch Stacks
+            fetch(`/api/card-stacks?walletAddress=${userProfile.walletAddress}&chainId=${userProfile.chainId}`)
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success) {
+                        setStacks(data.stacks || [])
+                    }
+                })
+                .catch(err => console.error("Failed to fetch stacks", err))
+                .finally(() => setIsLoadingStacks(false))
+        } else {
+            setIsLoadingStacks(false)
         }
     }, [userProfile?.walletAddress, userProfile?.chainId, fetchActivities])
 
     // Calculate total balance
-    const totalBalance = balances?.reduce((sum, b) => sum + (b.usdValue || 0), 0) || 0
+    const totalBalance = balances?.reduce((sum: number, b: any) => sum + (b.usdValue || 0), 0) || 0
     const formattedBalance = new Intl.NumberFormat('en-US', {
         style: 'currency',
         currency: 'USD',
@@ -118,9 +127,9 @@ export default function AppHomePage() {
 
                 {/* Main Content Grid */}
                 <div className="grid lg:grid-cols-3 gap-4">
-                    {/* Left Column - Card Stack Preview */}
+                    {/* Left Column - Active Bots Widget */}
                     <motion.div variants={itemVariants} className="lg:col-span-2">
-                        <CardStackPreview data={DEMO_PERMISSIONS} />
+                        <ActiveBotsWidget stacks={stacks} isLoading={isLoadingStacks} />
                     </motion.div>
 
                     {/* Right Column - Quick Actions + Activity */}
@@ -136,10 +145,10 @@ export default function AppHomePage() {
                     </motion.div>
                 </div>
 
-                {/* Bottom CTA - Only if no permissions */}
-                {!DEMO_PERMISSIONS.active && (
+                {/* Bottom CTA - Only if no stacks */}
+                {!isLoadingStacks && stacks.length === 0 && (
                     <motion.div variants={itemVariants}>
-                        <EmptyStateCard onCreateStack={() => router.push('/app/card-stacks/create')} />
+                        <EmptyStateCard onCreateStack={() => router.push('/app/card-stacks')} />
                     </motion.div>
                 )}
             </motion.div>
@@ -204,25 +213,67 @@ function StatCard({ icon, label, value, trend, trendUp, subtext, accent }: StatC
 // CARD STACK PREVIEW COMPONENT
 // ============================================
 
-interface CardStackPreviewProps {
-    data: typeof DEMO_PERMISSIONS
+// ============================================
+// ACTIVE BOTS WIDGET COMPONENT
+// ============================================
+
+interface ActiveBotsWidgetProps {
+    stacks: any[]
+    isLoading: boolean
 }
 
-function CardStackPreview({ data }: CardStackPreviewProps) {
+function ActiveBotsWidget({ stacks, isLoading }: ActiveBotsWidgetProps) {
     const router = useRouter()
-    const totalPercent = Math.round((data.usedToday / data.totalBudget) * 100)
+
+    // Filter for active DCA bots
+    const activeBots = stacks.flatMap(stack =>
+        (stack.subCards || [])
+            .filter((card: any) => card.type === "DCA_BOT" || card.name.includes("DCA"))
+            .map((card: any) => ({
+                ...card,
+                tokenSymbol: stack.tokenSymbol,
+                tokenDecimals: stack.tokenDecimals || 18,
+                stackId: stack.id
+            }))
+    )
+
+    if (isLoading) {
+        return (
+            <div className="p-5 rounded-xl bg-card border border-border h-[260px] flex items-center justify-center">
+                <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+            </div>
+        )
+    }
+
+    if (stacks.length === 0) {
+        return (
+            <div className="p-8 rounded-xl bg-card border border-border text-center h-full flex flex-col items-center justify-center">
+                <div className="p-3 rounded-xl bg-primary/10 mb-3">
+                    <Sparkles className="w-6 h-6 text-primary" />
+                </div>
+                <h3 className="font-semibold text-foreground">No Active Strategies</h3>
+                <p className="text-xs text-muted-foreground mt-1 mb-4">Start automating your trades with Card Stacks</p>
+                <button
+                    onClick={() => router.push('/app/card-stacks')}
+                    className="text-xs font-medium text-primary hover:underline"
+                >
+                    Create your first stack →
+                </button>
+            </div>
+        )
+    }
 
     return (
-        <div className="p-5 rounded-xl bg-card border border-border">
+        <div className="p-5 rounded-xl bg-card border border-border h-full flex flex-col">
             {/* Header */}
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center justify-between mb-5">
                 <div className="flex items-center gap-3">
-                    <div className="p-2 rounded-lg bg-primary/10">
-                        <PieChart className="w-4 h-4 text-primary" />
+                    <div className="p-2 rounded-lg bg-blue-500/10">
+                        <Zap className="w-4 h-4 text-blue-500" />
                     </div>
                     <div>
-                        <h3 className="text-sm font-semibold text-foreground">Active Permissions</h3>
-                        <p className="text-xs text-muted-foreground">Daily budget allocation</p>
+                        <h3 className="text-sm font-semibold text-foreground">Active Bots</h3>
+                        <p className="text-xs text-muted-foreground">{activeBots.length} strategies running</p>
                     </div>
                 </div>
                 <button
@@ -233,66 +284,66 @@ function CardStackPreview({ data }: CardStackPreviewProps) {
                 </button>
             </div>
 
-            {/* Master Progress Bar */}
-            <div className="mb-5">
-                <div className="flex justify-between items-center mb-2">
-                    <span className="text-xs text-muted-foreground">Today's usage</span>
-                    <span className="text-xs font-medium text-foreground">
-                        {data.usedToday} / {data.totalBudget} USDC
-                    </span>
-                </div>
-                <div className="h-2 rounded-full bg-muted overflow-hidden">
-                    <div className="h-full flex">
-                        {data.subCards.map((card, i) => {
-                            const width = (card.spent / data.totalBudget) * 100
-                            return (
-                                <motion.div
-                                    key={card.id}
-                                    initial={{ width: 0 }}
-                                    animate={{ width: `${width}%` }}
-                                    transition={{ delay: i * 0.1, duration: 0.5 }}
-                                    style={{ backgroundColor: card.color }}
-                                    className="h-full first:rounded-l-full last:rounded-r-full"
-                                />
-                            )
-                        })}
-                    </div>
-                </div>
-            </div>
-
-            {/* Sub-Cards Grid */}
-            <div className="grid grid-cols-3 gap-3">
-                {data.subCards.map((card) => {
-                    const percent = Math.round((card.spent / card.budget) * 100)
-                    return (
+            {/* Bots List */}
+            {activeBots.length > 0 ? (
+                <div className="space-y-3 overflow-y-auto max-h-[220px] pr-2 custom-scrollbar">
+                    {activeBots.map((bot: any, i: number) => (
                         <motion.div
-                            key={card.id}
-                            whileHover={{ y: -2 }}
-                            className="p-3 rounded-lg bg-muted/30 border border-border hover:border-primary/20 transition-colors cursor-pointer"
+                            key={i}
+                            initial={{ opacity: 0, x: -10 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            transition={{ delay: i * 0.1 }}
+                            onClick={() => router.push('/app/card-stacks')}
+                            className="p-3 rounded-lg bg-muted/30 border border-border flex items-center justify-between group hover:border-blue-500/30 hover:bg-muted/50 transition-all cursor-pointer"
                         >
-                            <div className="flex items-center gap-2 mb-2">
-                                <span className="text-lg">{card.icon}</span>
-                                <span className="text-xs font-medium text-foreground truncate">{card.name}</span>
+                            <div className="flex items-center gap-3">
+                                <div className="w-8 h-8 rounded-full bg-blue-500/20 text-blue-500 flex items-center justify-center font-bold text-xs">
+                                    {bot.tokenSymbol?.[0] || "T"}
+                                </div>
+                                <div>
+                                    <h4 className="text-xs font-bold text-foreground">{bot.tokenSymbol} DCA</h4>
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+                                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                                            Active
+                                        </span>
+                                        <span className="text-[10px] text-muted-foreground">•</span>
+                                        <span className="text-[10px] text-muted-foreground">
+                                            {(() => {
+                                                const config = bot.config as any
+                                                const dailyLimit = parseFloat(config?.dailyLimit || "0")
+                                                if (dailyLimit > 0) {
+                                                    const spent = parseFloat(bot.currentSpent || "0") / Math.pow(10, bot.tokenDecimals)
+                                                    const percent = Math.round((spent / dailyLimit) * 100)
+                                                    return `${percent}% Daily Limit`
+                                                }
+                                                return `${bot.allocationPercent}% Budget`
+                                            })()}
+                                        </span>
+                                    </div>
+                                </div>
                             </div>
-                            <div className="space-y-1.5">
-                                <div className="h-1.5 rounded-full bg-muted overflow-hidden">
-                                    <motion.div
-                                        initial={{ width: 0 }}
-                                        animate={{ width: `${percent}%` }}
-                                        transition={{ delay: 0.3, duration: 0.4 }}
-                                        className="h-full rounded-full"
-                                        style={{ backgroundColor: card.color }}
-                                    />
-                                </div>
-                                <div className="flex justify-between">
-                                    <span className="text-[10px] text-muted-foreground">{card.spent} used</span>
-                                    <span className="text-[10px] text-muted-foreground">{card.budget - card.spent} left</span>
-                                </div>
+
+                            <div className="text-right">
+                                <p className="text-xs font-mono font-medium text-foreground">
+                                    {(() => {
+                                        const spent = parseFloat(bot.currentSpent || "0") / Math.pow(10, bot.tokenDecimals)
+                                        return spent > 0
+                                            ? `${spent.toFixed(4)} ${bot.tokenSymbol}`
+                                            : "Waiting"
+                                    })()}
+                                </p>
+                                <p className="text-[10px] text-muted-foreground">spent today</p>
                             </div>
                         </motion.div>
-                    )
-                })}
-            </div>
+                    ))}
+                </div>
+            ) : (
+                <div className="flex-1 flex flex-col items-center justify-center text-center p-4">
+                    <p className="text-xs text-muted-foreground">You have stacks but no active DCA bots.</p>
+                    <button className="mt-2 text-[10px] text-primary" onClick={() => router.push('/app/card-stacks')}>Enable one now</button>
+                </div>
+            )}
         </div>
     )
 }

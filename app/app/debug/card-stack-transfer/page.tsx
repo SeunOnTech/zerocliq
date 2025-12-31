@@ -23,8 +23,8 @@ export default function CardStackTransferDebugPage() {
 
     const [stacks, setStacks] = useState<CardStack[]>([])
     const [selectedStack, setSelectedStack] = useState<CardStack | null>(null)
-    const [recipientAddress, setRecipientAddress] = useState("")
-    const [transferAmount, setTransferAmount] = useState("0.01")
+    const [recipientAddress, setRecipientAddress] = useState("0x5153d9734b24715943036527279cbff18a4493ea")
+    const [transferAmount, setTransferAmount] = useState("0.01") // Amount in token units (e.g., 0.01 USDC)
     const [logs, setLogs] = useState<string[]>([])
     const [isLoading, setIsLoading] = useState(false)
 
@@ -54,7 +54,7 @@ export default function CardStackTransferDebugPage() {
                 log(`✅ Found ${data.stacks.length} Card Stack(s)`)
                 data.stacks.forEach((stack: CardStack) => {
                     log(`   • ${stack.tokenSymbol} | Budget: ${formatUnits(BigInt(stack.totalBudget), stack.tokenDecimals)} | Status: ${stack.status}`)
-                    log(`     Context: ${stack.permissionsContext?.slice(0, 20) || 'NONE'}...`)
+                    log(`     Context: ${stack.permissionsContext?.slice(0, 30) || 'NONE'}...`)
                 })
             } else {
                 setStacks([])
@@ -67,7 +67,7 @@ export default function CardStackTransferDebugPage() {
         }
     }
 
-    // Test transfer using stored permission
+    // Test transfer using stored permission (via BACKEND API)
     const testTransfer = async () => {
         if (!selectedStack) {
             log("❌ Select a Card Stack first")
@@ -99,12 +99,13 @@ export default function CardStackTransferDebugPage() {
             log(`💰 Transfer: ${transferAmount} ${selectedStack.tokenSymbol} (${amountWei} wei) to ${recipientAddress.slice(0, 10)}...`)
 
             log("📡 Calling /api/card-stacks/execute-transfer...")
+            log("   (Server uses AGENT_EOA_PRIVATE_KEY to sign)")
 
             const response = await fetch('/api/card-stacks/execute-transfer', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    stackId: selectedStack.id,
+                    cardStackId: selectedStack.id,
                     recipientAddress,
                     amount: amountWei,
                 }),
@@ -113,22 +114,28 @@ export default function CardStackTransferDebugPage() {
             const data = await response.json()
 
             if (data.success) {
-                log("✅ API Response:")
-                log(`   Message: ${data.message}`)
-                if (data.debug) {
-                    log(`   Agent: ${data.debug.agentAddress}`)
-                    log(`   User SA: ${data.debug.userSmartAccount}`)
-                    log(`   Delegation Manager: ${data.debug.delegationManager}`)
-                    log(`   Context Length: ${data.debug.permissionsContextLength}`)
-                    log(`   Note: ${data.debug.note}`)
-                }
+                log("✅ SUCCESS!")
                 if (data.transactionHash) {
                     log(`🎉 TX Hash: ${data.transactionHash}`)
+                    log(`   View: https://sepolia.etherscan.io/tx/${data.transactionHash}`)
                 }
             } else {
                 log(`❌ API Error: ${data.error}`)
-                if (data.debug) {
-                    log(`   Debug: ${JSON.stringify(data.debug)}`)
+                if (data.details) {
+                    if (typeof data.details === 'object') {
+                        // Handle object details (like insufficient balance)
+                        if (data.details.message) {
+                            log(`   ℹ️ ${data.details.message}`)
+                        }
+                        if (data.details.userSmartAccount) {
+                            log(`   User SA: ${data.details.userSmartAccount}`)
+                        }
+                        if (data.details.balance !== undefined) {
+                            log(`   Balance: ${data.details.balance}`)
+                        }
+                    } else {
+                        log(`   Details: ${String(data.details).slice(0, 200)}...`)
+                    }
                 }
             }
 
@@ -152,17 +159,14 @@ export default function CardStackTransferDebugPage() {
 
         if (!selectedStack.permissionsContext) {
             log("❌ No permissionsContext stored!")
-            log("   This means requestExecutionPermissions() was never called")
             return
         }
 
         if (selectedStack.permissionsContext === "pending") {
             log("⚠️ permissionsContext is 'pending' - placeholder value")
-            log("   Need to call requestExecutionPermissions() and store real response")
             return
         }
 
-        // Try to parse as hex
         if (selectedStack.permissionsContext.startsWith("0x")) {
             log("✅ Looks like a valid hex-encoded context!")
             log(`   Length: ${selectedStack.permissionsContext.length} chars`)
@@ -170,9 +174,8 @@ export default function CardStackTransferDebugPage() {
             log("⚠️ Not a hex string - might be placeholder or invalid")
         }
 
-        log("")
         log(`📋 Delegation Manager: ${selectedStack.delegationManager}`)
-        if (selectedStack.delegationManager && selectedStack.delegationManager.startsWith("0x")) {
+        if (selectedStack.delegationManager?.startsWith("0x")) {
             log("✅ Delegation Manager looks valid")
         } else {
             log("⚠️ Delegation Manager might be invalid")
@@ -187,9 +190,11 @@ export default function CardStackTransferDebugPage() {
 
     return (
         <div style={{ padding: 40, fontFamily: 'monospace', maxWidth: '1000px', margin: '0 auto' }}>
-            <h1 className="text-2xl font-bold mb-4">Card Stack Transfer Test (ERC-7715)</h1>
+            <h1 className="text-2xl font-bold mb-4">Card Stack Transfer Test (Backend API)</h1>
             <p className="text-sm text-gray-600 mb-6">
-                Test executing a token transfer using stored ERC-7715 permission context.
+                Test executing a token transfer using stored ERC-7715 permission via the <strong>backend API</strong>.
+                <br />
+                The server has the Agent key (AGENT_EOA_PRIVATE_KEY) and will execute the UserOperation.
             </p>
 
             {/* Wallet Info */}
@@ -252,7 +257,7 @@ export default function CardStackTransferDebugPage() {
                             />
                         </div>
                         <div className="w-32">
-                            <label className="block mb-1 text-sm">Amount:</label>
+                            <label className="block mb-1 text-sm">Amount (in {selectedStack?.tokenSymbol || 'tokens'}):</label>
                             <input
                                 type="text"
                                 value={transferAmount}
@@ -286,28 +291,28 @@ export default function CardStackTransferDebugPage() {
                     disabled={isLoading || !selectedStack || !recipientAddress}
                     className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50"
                 >
-                    💸 Test Transfer
+                    💸 Execute Transfer (via Backend)
                 </button>
             </div>
 
             {/* Logs */}
-            <div className="bg-gray-50 p-4 rounded border min-h-[300px] whitespace-pre-wrap overflow-auto text-sm">
-                <div className="flex justify-between items-center mb-2 border-b pb-2">
+            <div className="bg-black text-green-400 p-4 rounded min-h-[300px] overflow-auto text-xs font-mono">
+                <div className="flex justify-between items-center mb-2 border-b border-green-800 pb-2">
                     <span className="font-bold">Logs</span>
-                    <button onClick={clearLogs} className="text-xs text-red-500 underline">Clear</button>
+                    <button onClick={clearLogs} className="text-xs text-red-400 underline">Clear</button>
                 </div>
-                {logs.length === 0 && <span className="text-gray-400">Waiting for action...</span>}
+                {logs.length === 0 && <span className="opacity-50">Waiting for action...</span>}
                 {logs.map((L, i) => <div key={i} className="mb-1">{L}</div>)}
             </div>
 
             {/* Info Box */}
             <div className="mt-6 p-4 bg-yellow-50 border border-yellow-200 rounded text-sm">
-                <p className="font-bold text-yellow-800 mb-2">⚠️ How Card Stack Transfers Work (ERC-7715):</p>
+                <p className="font-bold text-yellow-800 mb-2">ℹ️ How This Works:</p>
                 <ol className="list-decimal ml-4 text-yellow-700 space-y-1">
-                    <li>User creates Card Stack → calls <code>requestExecutionPermissions()</code></li>
-                    <li>MetaMask returns <code>permissionsContext</code> + <code>delegationManager</code></li>
-                    <li>These are stored in the CardStack database record</li>
-                    <li>Agent uses <code>sendUserOperationWithDelegation()</code> to transfer tokens</li>
+                    <li>Card Stack was created → permission granted to <strong>Server Agent</strong></li>
+                    <li>Server has <code>AGENT_EOA_PRIVATE_KEY</code> to sign UserOperations</li>
+                    <li>This page calls the backend API which executes the transfer</li>
+                    <li>No browser session key needed (unlike the standalone debug flow)</li>
                 </ol>
             </div>
         </div>

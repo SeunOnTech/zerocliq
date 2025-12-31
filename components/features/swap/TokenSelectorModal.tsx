@@ -34,6 +34,7 @@ interface TokenSelectorModalProps {
     onSelectToken: (token: TokenInfo) => void
     selectedToken?: string
     excludeToken?: string
+    filter?: (token: TokenInfo) => boolean
 }
 
 const overlayVariants = {
@@ -53,6 +54,7 @@ export function TokenSelectorModal({
     onSelectToken,
     selectedToken,
     excludeToken,
+    filter,
 }: TokenSelectorModalProps) {
     const [searchQuery, setSearchQuery] = useState("")
 
@@ -89,6 +91,9 @@ export function TokenSelectorModal({
 
     const filteredTokens = useMemo(() => {
         return tokens.filter((token) => {
+            if (filter && !filter(token)) {
+                return false
+            }
             if (excludeToken && token.symbol.toLowerCase() === excludeToken.toLowerCase()) {
                 return false
             }
@@ -104,8 +109,12 @@ export function TokenSelectorModal({
     }, [tokens, searchQuery, excludeToken])
 
     const favoriteTokens = useMemo(() => {
-        return tokens.filter((t) => t.isStable || t.isBlueChip).slice(0, 6)
-    }, [tokens])
+        let favs = tokens.filter((t) => t.isStable || t.isBlueChip)
+        if (filter) {
+            favs = favs.filter(filter)
+        }
+        return favs.slice(0, 6)
+    }, [tokens, filter])
 
     const handleSelectToken = (token: TokenInfo) => {
         onSelectToken(token)
@@ -141,7 +150,7 @@ export function TokenSelectorModal({
                 {isOpen && (
                     <DialogPortal forceMount>
                         <motion.div
-                            className="fixed inset-0 z-50 bg-black/50"
+                            className="fixed inset-0 z-[110] bg-black/50"
                             initial="hidden"
                             animate="visible"
                             exit="hidden"
@@ -150,7 +159,7 @@ export function TokenSelectorModal({
                         />
 
                         <motion.div
-                            className="fixed z-50 w-full h-full md:h-auto md:max-w-[420px] md:top-[50%] md:left-[50%] md:-translate-x-1/2 md:-translate-y-1/2 top-0 left-0"
+                            className="fixed z-[110] w-full h-full md:h-auto md:max-w-[420px] md:top-[50%] md:left-[50%] md:-translate-x-1/2 md:-translate-y-1/2 top-0 left-0"
                             initial="hidden"
                             animate="visible"
                             exit="exit"

@@ -17,7 +17,12 @@ export async function POST(req: NextRequest) {
             totalBudget,
             periodDuration,
             expiresAt,
-            subCards
+            subCards,
+            // DCA Config
+            targetTokenAddress,
+            targetTokenSymbol,
+            targetTokenDecimals,
+            amountPerExecution
         } = body
 
         if (!walletAddress || !permissionsContext || !chainId) {
@@ -54,7 +59,12 @@ export async function POST(req: NextRequest) {
             totalBudget,
             periodDuration,
             expiresAt,
-            subCards
+            subCards,
+            // DCA Config
+            targetTokenAddress,
+            targetTokenSymbol,
+            targetTokenDecimals,
+            amountPerExecution
         })
 
         return NextResponse.json({ success: true, stack })
