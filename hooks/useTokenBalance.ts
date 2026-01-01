@@ -27,6 +27,33 @@ export function useTokenBalance(
 }
 
 /**
+ * useTokenPrice - Get current price for a specific token
+ * 
+ * Derived from useTokenBalance/useWalletBalances.
+ * 
+ * @param tokenAddress - The token address
+ * @param overrideChainId - Optional chain ID
+ * @returns Object containing price
+ */
+export function useTokenPrice(
+    tokenAddress: string | undefined,
+    overrideChainId?: number
+): { price: number | null; isLoading: boolean } {
+    const { chainId: connectedChainId } = useAccount()
+    const chainId = overrideChainId || connectedChainId
+    const getTokenBalance = useAppStore((s) => s.getTokenBalance)
+    const isBalanceFetching = useAppStore((s) => s.isBalanceFetching)
+
+    if (!tokenAddress || !chainId) return { price: null, isLoading: false }
+
+    const tokenData = getTokenBalance(chainId, tokenAddress, 'eoa')
+    return {
+        price: tokenData?.usdPrice || null,
+        isLoading: isBalanceFetching
+    }
+}
+
+/**
  * useWalletBalances - Get all balances for current wallet
  * 
  * Reads directly from Zustand for instant access.

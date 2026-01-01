@@ -64,20 +64,20 @@ class DCAService {
      * ORCHESTRATOR: Execute complete DCA
      */
     async executeFullDCA(params: DCAExecutionParams): Promise<DCAExecutionResult> {
-        console.log(`[DCA] --- STARTING DCA EXECUTION for stack ${params.cardStackId} ---`)
+        console.log(`[DCA] --- STARTING DCA/LIMIT EXECUTION for stack ${params.cardStackId} ---`)
 
         // 1. Execute Transfer (User -> Agent)
         const transferResult = await this.executeTransfer(params)
 
         if (!transferResult.success) {
-            console.error(`[DCA] Transfer failed. Aborting swap.`)
+            console.error(`[DCA] Transfer failed. Aborting execution.`)
             return transferResult
         }
 
-        console.log(`[DCA] Transfer successful. Proceeding to swap check...`)
+        console.log(`[DCA] Transfer successful. Proceeding to swap...`)
 
-        // 2. Execute Swap (Agent -> Target Token)
-        // We pass the transfer result mainly to link the data
+        // 2. Execute Swap (Agent -> Target Token -> User)
+        // NOTE: Subscription payments are handled by subscription.service.ts
         return this.executeSwap(params, transferResult)
     }
 
@@ -112,7 +112,7 @@ class DCAService {
         const agentPrivateKey = process.env.AGENT_EOA_PRIVATE_KEY as Hex
         const agentEOA = privateKeyToAccount(agentPrivateKey)
 
-        const publicClient = createPublicClient({ chain: viemChain, transport: http(chainConfig.rpcUrl) })
+        const publicClient = createPublicClient({ chain: viemChain, transport: http(chainConfig!.rpcUrl) })
 
         const agentSmartAccount = await toMetaMaskSmartAccount({
             client: publicClient,
@@ -150,7 +150,7 @@ class DCAService {
                 const dailyLimitWei = BigInt(Math.round(dailyLimitBase * Math.pow(10, cardStack.tokenDecimals)))
 
                 // Check if we need to reset daily limit
-                const lastSpentDate = new Date(dcaSubCardForLimit.lastSpentDate)
+                const lastSpentDate = new Date((dcaSubCardForLimit as any).lastSpentDate)
                 const today = new Date()
                 const isSameDay = lastSpentDate.getDate() === today.getDate() &&
                     lastSpentDate.getMonth() === today.getMonth() &&
@@ -221,7 +221,7 @@ class DCAService {
 
             if (subCardToUpdate) {
                 // Re-calculate spent based on daily reset (same logic as above)
-                const lastSpentDate = new Date(subCardToUpdate.lastSpentDate)
+                const lastSpentDate = new Date((subCardToUpdate as any).lastSpentDate)
                 const today = new Date()
                 const isSameDay = lastSpentDate.getDate() === today.getDate() &&
                     lastSpentDate.getMonth() === today.getMonth() &&
@@ -237,7 +237,7 @@ class DCAService {
                         currentSpent: newSpent.toString(),
                         totalSpent: (BigInt(subCardToUpdate.totalSpent || "0") + transferAmount).toString(),
                         lastSpentDate: new Date() // Always update timestamp to now
-                    }
+                    } as any
                 })
                 updatedSubCardSpent = newSpent.toString()
                 console.log(`[DCA Transfer] Updated SubCard ${subCardToUpdate.id} spent: ${newSpent} (Reset: ${!isSameDay})`)
@@ -263,9 +263,9 @@ class DCAService {
             }
         }
     }
-
+    // NOTE: Subscription forward transfer logic has been moved to subscription.service.ts
     /**
-     * STEP 2: Swap (Agent -> Target Token)
+     * STEP 2b: Swap (Agent -> Target Token)
      * Only called if Transfer succeeds.
      */
     async executeSwap(params: DCAExecutionParams, transferResult: DCAExecutionResult): Promise<DCAExecutionResult> {
@@ -298,10 +298,11 @@ class DCAService {
         const viemChain = getViemChain(chainId)
         const paymasterUrl = getPaymasterUrl(chainId)
         const chainConfig = getChainById(chainId)
+        if (!chainConfig) throw new Error("Chain not supported")
 
         const agentPrivateKey = process.env.AGENT_EOA_PRIVATE_KEY as Hex
         const agentEOA = privateKeyToAccount(agentPrivateKey)
-        const publicClient = createPublicClient({ chain: viemChain, transport: http(chainConfig.rpcUrl) })
+        const publicClient = createPublicClient({ chain: viemChain, transport: http(chainConfig!.rpcUrl) })
 
         // Re-init Agent Smart Account for swap context
         const agentSmartAccount = await toMetaMaskSmartAccount({
@@ -311,6 +312,9 @@ class DCAService {
             deploySalt: AGENT_SMART_ACCOUNT_DEPLOY_SALT,
             signer: { account: agentEOA },
         })
+
+        const agentAddress = agentSmartAccount.address
+        console.log(`[DCA Swap] 🤖 Agent Smart Account: ${agentAddress}`)
 
         // 1. Get Quote
         console.log(`[DCA Swap] Fetching quote...`)

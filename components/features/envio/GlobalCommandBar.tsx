@@ -158,14 +158,14 @@ export function GlobalCommandBar() {
             <div className="h-12" />
 
             <motion.div
-                className="fixed bottom-0 left-0 right-0 z-50 border-t border-zinc-800 bg-zinc-950/95 backdrop-blur-md shadow-2xl"
+                className="fixed bottom-0 left-0 right-0 z-50 border-t border-border bg-background/95 backdrop-blur-md shadow-2xl"
                 initial={false}
                 animate={{ height: isExpanded ? 'auto' : '48px' }}
                 transition={{ type: "spring", stiffness: 300, damping: 30 }}
             >
                 {/* 1. MINIMIZED STATE (The Ticker) */}
                 <div
-                    className="h-12 flex items-center px-4 cursor-pointer hover:bg-white/5 transition-colors group"
+                    className="h-12 flex items-center px-4 cursor-pointer hover:bg-muted/50 transition-colors group"
                     onClick={() => setIsExpanded(!isExpanded)}
                 >
                     {/* Visual Pulse */}
@@ -175,19 +175,19 @@ export function GlobalCommandBar() {
 
                     {/* Status Indicator */}
                     <div className="flex items-center gap-2 mr-6">
-                        <div className={`w-2 h-2 rounded-full ${isPulsing ? 'bg-emerald-400 animate-ping' : 'bg-emerald-900'}`} />
-                        <span className="text-[10px] font-mono text-emerald-500 uppercase tracking-wider">
+                        <div className={`w-2 h-2 rounded-full ${isPulsing ? 'bg-emerald-500 animate-ping' : 'bg-emerald-900 dark:bg-emerald-900'}`} />
+                        <span className="text-[10px] font-mono text-emerald-600 dark:text-emerald-500 uppercase tracking-wider">
                             {isPulsing ? 'LIVE ACTIVITY' : 'SYSTEM ONLINE'}
                         </span>
                     </div>
 
                     {/* Scrolling Ticker (Latest Op) */}
-                    <div className="flex-1 font-mono text-xs text-zinc-400 truncate flex items-center gap-4">
+                    <div className="flex-1 font-mono text-xs text-muted-foreground truncate flex items-center gap-4">
                         {latestOp ? (
                             <>
-                                <span className="text-zinc-600">LATEST_OP:</span>
-                                <span className="text-zinc-100">{latestOp.userOpHash.slice(0, 10)}...</span>
-                                <span className={latestOp.success ? "text-emerald-500" : "text-red-500"}>
+                                <span className="text-foreground">LATEST_OP:</span>
+                                <span className="text-foreground font-bold">{latestOp.userOpHash.slice(0, 10)}...</span>
+                                <span className={latestOp.success ? "text-emerald-600 dark:text-emerald-500" : "text-red-500"}>
                                     [{latestOp.success ? 'CONFIRMED' : 'FAILED'}]
                                 </span>
                             </>
@@ -199,17 +199,17 @@ export function GlobalCommandBar() {
                     {/* Mini Stats (Right) */}
                     <div className="flex items-center gap-6 font-mono text-xs hidden md:flex">
                         <div className="flex flex-col items-end">
-                            <span className="text-[10px] text-zinc-500">GAS_SPONSORED</span>
-                            <span className="text-emerald-400">{stats.totalGasUsed} ETH</span>
+                            <span className="text-[10px] text-muted-foreground">GAS_SPONSORED</span>
+                            <span className="text-emerald-600 dark:text-emerald-400">{stats.totalGasUsed} ETH</span>
                         </div>
                         <div className="flex flex-col items-end">
-                            <span className="text-[10px] text-zinc-500">TOTAL_OPS</span>
-                            <span className="text-zinc-100">{stats.totalOperations}</span>
+                            <span className="text-[10px] text-muted-foreground">TOTAL_OPS</span>
+                            <span className="text-foreground">{stats.totalOperations}</span>
                         </div>
                     </div>
 
                     {/* Toggle Icon */}
-                    <div className="ml-4 text-zinc-500 group-hover:text-zinc-100">
+                    <div className="ml-4 text-muted-foreground group-hover:text-foreground">
                         {isExpanded ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
                     </div>
                 </div>
@@ -221,61 +221,61 @@ export function GlobalCommandBar() {
                             initial={{ opacity: 0 }}
                             animate={{ opacity: 1 }}
                             exit={{ opacity: 0 }}
-                            className="p-6 border-t border-zinc-800 bg-zinc-950"
+                            className="p-6 border-t border-border bg-card"
                         >
                             {/* HUD Stats Row */}
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
                                 {/* Aggregation Card */}
-                                <div className="p-4 border border-zinc-800 bg-zinc-900/50 rounded-lg">
-                                    <div className="flex items-center gap-2 mb-2 text-zinc-500">
+                                <div className="p-4 border border-border bg-muted/30 rounded-lg">
+                                    <div className="flex items-center gap-2 mb-2 text-muted-foreground">
                                         <Zap className="w-4 h-4 text-emerald-500" />
                                         <span className="text-xs font-mono uppercase">Global Usage</span>
                                     </div>
-                                    <div className="text-2xl font-mono text-zinc-100">
-                                        {stats.totalGasUsed} <span className="text-sm text-zinc-500">ETH</span>
+                                    <div className="text-2xl font-mono text-foreground">
+                                        {stats.totalGasUsed} <span className="text-sm text-muted-foreground">ETH</span>
                                     </div>
-                                    <div className="text-[10px] text-emerald-500 mt-1">
+                                    <div className="text-[10px] text-emerald-600 dark:text-emerald-500 mt-1">
                                         +4337 Sponsored Transactions
                                     </div>
                                 </div>
 
                                 {/* Savings Card (Shadow Fork Logic) */}
-                                <div className="p-4 border border-zinc-800 bg-zinc-900/50 rounded-lg">
-                                    <div className="flex items-center gap-2 mb-2 text-zinc-500">
+                                <div className="p-4 border border-border bg-muted/30 rounded-lg">
+                                    <div className="flex items-center gap-2 mb-2 text-muted-foreground">
                                         <TrendingUp className="w-4 h-4 text-blue-500" />
                                         <span className="text-xs font-mono uppercase">Est. User Savings</span>
                                     </div>
-                                    <div className="text-2xl font-mono text-blue-400">
+                                    <div className="text-2xl font-mono text-blue-600 dark:text-blue-400">
                                         ~{stats.savingsPercent}%
                                     </div>
-                                    <div className="text-[10px] text-zinc-500 mt-1">
+                                    <div className="text-[10px] text-muted-foreground mt-1">
                                         vs Standard EOA Transfers
                                     </div>
                                 </div>
 
                                 {/* Raw Stream Card */}
-                                <div className="p-4 border border-zinc-800 bg-zinc-900/50 rounded-lg">
-                                    <div className="flex items-center gap-2 mb-2 text-zinc-500">
+                                <div className="p-4 border border-border bg-muted/30 rounded-lg">
+                                    <div className="flex items-center gap-2 mb-2 text-muted-foreground">
                                         <FileJson className="w-4 h-4 text-purple-500" />
                                         <span className="text-xs font-mono uppercase">Indexer Status</span>
                                     </div>
-                                    <div className="text-xs font-mono text-zinc-400 space-y-1">
+                                    <div className="text-xs font-mono text-muted-foreground space-y-1">
                                         <div className="flex justify-between">
                                             <span>SYNC_Height:</span>
-                                            <span className="text-zinc-100">Live</span>
+                                            <span className="text-foreground">Live</span>
                                         </div>
                                         <div className="flex justify-between">
                                             <span>LATENCY:</span>
-                                            <span className="text-green-500">12ms</span>
+                                            <span className="text-green-600 dark:text-green-500">12ms</span>
                                         </div>
                                     </div>
                                 </div>
                             </div>
 
                             {/* The Feed */}
-                            <div className="border border-zinc-800 rounded-lg overflow-hidden bg-zinc-900/30">
-                                <div className="p-2 bg-zinc-900/80 border-b border-zinc-800 flex items-center justify-between">
-                                    <span className="text-xs font-mono text-zinc-400">LIVE_EVENT_FEED</span>
+                            <div className="border border-border rounded-lg overflow-hidden bg-muted/10">
+                                <div className="p-2 bg-muted/50 border-b border-border flex items-center justify-between">
+                                    <span className="text-xs font-mono text-muted-foreground">LIVE_EVENT_FEED</span>
                                     <div className="flex gap-1">
                                         <div className="w-2 h-2 rounded-full bg-red-500" />
                                         <div className="w-2 h-2 rounded-full bg-yellow-500" />

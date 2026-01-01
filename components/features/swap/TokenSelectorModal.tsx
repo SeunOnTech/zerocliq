@@ -20,6 +20,7 @@ export interface TokenInfo {
     symbol: string
     name: string
     address: `0x${string}`
+    chainId?: number
     decimals: number
     logoURI: string
     isStable?: boolean

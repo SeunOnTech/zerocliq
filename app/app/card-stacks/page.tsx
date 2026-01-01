@@ -17,6 +17,7 @@ import {
     MoreVertical,
     ExternalLink,
     Trash2,
+    Settings,
     Settings2,
     X,
     Check,
@@ -35,11 +36,12 @@ import {
     Rocket,
     Search,
     ArrowUp,
-    ArrowDown
+    ArrowDown,
+    CalendarCheck
 } from "lucide-react"
-import { useBalanceBySymbol } from "@/hooks/useTokenBalance"
+import { useBalanceBySymbol, useTokenPrice } from "@/hooks/useTokenBalance"
 import { FundingModal } from "@/components/features/smart-account/FundingModal"
-import { cn } from "@/lib/utils"
+import { cn, formatUsdValue } from "@/lib/utils"
 import { TokenSelectorModal, TokenInfo } from "@/components/features/swap/TokenSelectorModal"
 import { createWalletClient, createPublicClient, custom, parseUnits } from "viem"
 import { useAccount } from "wagmi"
@@ -60,6 +62,7 @@ import { getChainById, getViemChain } from "@/lib/server/config/chains"
 const SUB_CARD_TEMPLATES = [
     { id: "dca", name: "DCA Bot", icon: "🤖", color: "#8B5CF6", description: "Auto-buy at intervals" },
     { id: "limits", name: "Limit Orders", icon: "📊", color: "#06B6D4", description: "Execute at price targets" },
+    { id: "subscription", name: "Recurring Payment", icon: "📅", color: "#10B981", description: "Auto-pay bills & subscriptions" },
     { id: "manual", name: "Manual Trades", icon: "✋", color: "#F97316", description: "Your direct swaps" },
 ]
 
@@ -91,6 +94,7 @@ interface StackCardData {
     usedToday: number
     expiresAt: Date
     status: "active" | "paused"
+    periodDuration: number
     subCards: Array<{
         id: string
         name: string
@@ -145,6 +149,10 @@ export default function CardStacksTestPage() {
     const [executingStackId, setExecutingStackId] = useState<string | null>(null)
     const [executingSubCardId, setExecutingSubCardId] = useState<string | null>(null)
 
+    // Stack Management State
+    const [managingStack, setManagingStack] = useState<StackCardData | null>(null)
+    const [showStackManagementModal, setShowStackManagementModal] = useState(false)
+
     // DCA Configuration State
     // Success Modal State
     const [successModal, setSuccessModal] = useState<{
@@ -159,6 +167,8 @@ export default function CardStacksTestPage() {
         rate?: string
         swapTxHash?: string
         isLimitOrder?: boolean
+        isSubscription?: boolean
+        recipient?: string
     } | null>(null)
 
     // Refetch stacks from API
@@ -182,6 +192,8 @@ export default function CardStacksTestPage() {
             const stack = stacks.find(s => s.id === stackId)
             const subCard = stack?.subCards.find(s => s.id === subCardId)
             const isLimitOrder = subCard?.type === 'LIMIT_ORDER'
+            // Extract recipient for subscription
+            const recipient = (subCard?.config as any)?.recipient
 
             const res = await fetch('/api/card-stacks/execute-dca', {
                 method: 'POST',
@@ -190,7 +202,8 @@ export default function CardStacksTestPage() {
                     cardStackId: stackId,
                     subCardId,
                     amount: amount.toFixed(stack?.token.decimals || 6),
-                    isLimitOrder // Pass to API for activity tracking
+                    isLimitOrder, // Pass to API for activity tracking
+                    recipientAddress: recipient // Pass for subscription handling
                 })
             })
             const data = await res.json()
@@ -210,7 +223,9 @@ export default function CardStacksTestPage() {
                     targetTokenLogo: targetTokenInfo?.logoURI,
                     amountOut: data.amountOut ? (Number(data.amountOut) / Math.pow(10, 18)).toFixed(6) : undefined,
                     rate: data.rate,
-                    isLimitOrder
+                    isLimitOrder,
+                    isSubscription: !!recipient,
+                    recipient
                 })
 
                 // Refetch stacks to get updated spent amounts from DB
@@ -229,17 +244,76 @@ export default function CardStacksTestPage() {
             setExecutingStackId(null)
             setExecutingSubCardId(null)
         }
-    }, [currentChainId, address, stacks, refetchStacks, supportedTokens])
+    }, [stacks, supportedTokens, refetchStacks])
+
+    // Dedicated handler for Subscription payments - calls new endpoint
+    const handleExecuteSubscription = useCallback(async (stackId: string, subCardId: string, amount: number): Promise<boolean> => {
+        setExecutingStackId(stackId)
+        setExecutingSubCardId(subCardId)
+        try {
+            const stack = stacks.find(s => s.id === stackId)
+            const subCard = stack?.subCards.find(s => s.id === subCardId)
+            const config = subCard?.config as any
+            const recipient = config?.recipient
+
+            if (!recipient) {
+                toast.error("Invalid Subscription", "No recipient address configured")
+                return false
+            }
+
+            console.log(`[Subscription] Executing payment: ${amount} ${stack?.token.symbol} to ${recipient}`)
+
+            const res = await fetch('/api/card-stacks/execute-subscription', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    cardStackId: stackId,
+                    subCardId,
+                    amount: amount.toFixed(stack?.token.decimals || 6),
+                    recipientAddress: recipient
+                })
+            })
+            const data = await res.json()
+
+            if (data.success) {
+                // Show subscription-specific success modal
+                setSuccessModal({
+                    show: true,
+                    txHash: data.transferTxHash,
+                    swapTxHash: data.paymentTxHash, // Payment TX
+                    amount: (Number(data.amountIn) / Math.pow(10, stack?.token.decimals || 18)).toString(),
+                    token: data.sourceToken || stack?.token.symbol,
+                    tokenLogo: stack?.token.logoURI,
+                    isSubscription: true,
+                    recipient: data.recipient || recipient,
+                })
+
+                await refetchStacks()
+                return true
+            } else {
+                console.error("Subscription payment failed", data.error)
+                toast.error("Payment Failed", data.error || "Unknown error")
+                return false
+            }
+        } catch (e: any) {
+            console.error("Subscription execution error", e)
+            toast.error("Payment Failed", e.message || "Network error")
+            return false
+        } finally {
+            setExecutingStackId(null)
+            setExecutingSubCardId(null)
+        }
+    }, [stacks, refetchStacks, supportedTokens])
 
     // Transform API data to StackCard format
     const transformApiStack = (apiStack: any): StackCardData => {
         const foundToken = supportedTokens.find(t => t.symbol === apiStack.tokenSymbol)
-        const token = foundToken ? { ...foundToken, chainId: currentChainId } : {
+        const token: StackCardData['token'] = foundToken ? { ...foundToken, chainId: currentChainId } : {
             symbol: apiStack.tokenSymbol || "???",
             name: apiStack.tokenSymbol || "Unknown",
             logoURI: "https://assets.coingecko.com/coins/images/38927/standard/monad.png",
             decimals: 18,
-            address: apiStack.tokenAddress || "0x0",
+            address: (apiStack.tokenAddress || "0x0") as `0x${string}`,
             chainId: currentChainId
         }
 
@@ -271,6 +345,15 @@ export default function CardStacksTestPage() {
                     targetPrice: sc.config?.targetPrice,
                     condition: sc.config?.condition,
                     action: sc.config?.action || 'BUY'
+                } : {}),
+                // Subscription specific
+                ...(sc.type === 'SUBSCRIPTION' ? {
+                    recipient: sc.config?.recipient,
+                    label: sc.config?.label,
+                    frequency: sc.config?.frequency,
+                    paymentDay: sc.config?.paymentDay,
+                    nextPaymentDate: sc.config?.nextPaymentDate,
+                    action: sc.config?.action || 'TRANSFER'
                 } : {})
             }
         }))
@@ -282,6 +365,7 @@ export default function CardStacksTestPage() {
             name: `${apiStack.tokenSymbol} Stack`,
             token,
             totalBudget: parseFloat(apiStack.totalBudget),
+            periodDuration: parseInt(apiStack.periodDuration || "86400"),
             usedToday: totalSpent, // Calculated from subCards
             expiresAt: new Date(apiStack.expiresAt),
             status: apiStack.status.toLowerCase() as "active" | "paused",
@@ -427,10 +511,15 @@ export default function CardStacksTestPage() {
                             key={stack.id}
                             stack={stack}
                             onExecuteDCA={handleExecuteDCA}
+                            onExecuteSubscription={handleExecuteSubscription}
                             onRefetch={refetchStacks}
                             isExecuting={executingStackId === stack.id}
                             executingSubCardId={executingSubCardId}
                             supportedTokens={supportedTokens}
+                            onManage={(s) => {
+                                setManagingStack(s)
+                                setShowStackManagementModal(true)
+                            }}
                         />
                     ))}
                 </div>
@@ -499,7 +588,7 @@ export default function CardStacksTestPage() {
                                     transition={{ delay: 0.3 }}
                                     className="text-xl font-bold text-foreground"
                                 >
-                                    {successModal.isLimitOrder ? 'Limit Order Filled!' : 'Transfer Successful!'}
+                                    {successModal.isLimitOrder ? 'Limit Order Filled!' : (successModal.isSubscription ? 'Payment Sent!' : 'Transfer Successful!')}
                                 </motion.h3>
                                 <motion.p
                                     initial={{ opacity: 0 }}
@@ -509,13 +598,32 @@ export default function CardStacksTestPage() {
                                 >
                                     {successModal.isLimitOrder
                                         ? 'Your limit order has been triggered and executed'
-                                        : 'Your DCA trade has been executed'}
+                                        : (successModal.isSubscription ? 'Your recurring payment has been processed' : 'Your DCA trade has been executed')}
                                 </motion.p>
                             </div>
 
                             {/* Details */}
                             <div className="p-6 space-y-4">
-                                {successModal.targetToken ? (
+                                {successModal.isSubscription ? (
+                                    <div className="space-y-4">
+                                        <div className="bg-emerald-500/10 border border-emerald-500/20 p-4 rounded-xl">
+                                            <div className="flex justify-between items-center mb-1">
+                                                <span className="text-xs text-emerald-600 dark:text-emerald-400 font-semibold uppercase tracking-wider">Recipient</span>
+                                                <span className="text-xs text-muted-foreground">{new Date().toLocaleDateString()}</span>
+                                            </div>
+                                            <div className="font-mono text-lg font-bold text-foreground">
+                                                {successModal.recipient?.startsWith("0x") ? `${successModal.recipient.slice(0, 6)}...${successModal.recipient.slice(-4)}` : successModal.recipient}
+                                            </div>
+                                            <div className="mt-2 pt-2 border-t border-emerald-500/20 flex justify-between items-center">
+                                                <span className="text-sm font-medium text-muted-foreground">Amount Paid</span>
+                                                <span className="text-lg font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
+                                                    {successModal.tokenLogo && <img src={successModal.tokenLogo} className="w-5 h-5 rounded-full" />}
+                                                    {successModal.amount} {successModal.token}
+                                                </span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ) : successModal.targetToken ? (
                                     <div className="space-y-4">
                                         <div className="bg-muted/50 p-4 rounded-xl">
                                             <div className="flex justify-between items-center mb-2">
@@ -585,6 +693,14 @@ export default function CardStacksTestPage() {
                     </motion.div>
                 )}
             </AnimatePresence>
+            {managingStack && (
+                <StackManagementModalUpdated
+                    isOpen={showStackManagementModal}
+                    onClose={() => setShowStackManagementModal(false)}
+                    stack={managingStack}
+                    onSuccess={refetchStacks}
+                />
+            )}
         </div>
     )
 }
@@ -1295,9 +1411,10 @@ interface AddStrategyModalProps {
     stack: StackCardData
     onAddDCA: () => void
     onAddLimit: () => void
+    onAddSubscription: () => void
 }
 
-function AddStrategyModal({ isOpen, onClose, stack, onAddDCA, onAddLimit }: AddStrategyModalProps) {
+function AddStrategyModal({ isOpen, onClose, stack, onAddDCA, onAddLimit, onAddSubscription }: AddStrategyModalProps) {
     const [searchQuery, setSearchQuery] = useState('')
 
     if (!isOpen) return null
@@ -1322,6 +1439,16 @@ function AddStrategyModal({ isOpen, onClose, stack, onAddDCA, onAddLimit }: AddS
             available: true,
             action: onAddLimit,
             tags: ['price', 'target', 'buy', 'sell']
+        },
+        {
+            id: 'subscription',
+            name: 'Recurring Payment',
+            description: 'Auto-pay bills, rent, or salaries',
+            icon: Calendar, // Ensure Calendar is imported or use lucide-react generic
+            color: 'emerald', // Using emerald color class key
+            available: true,
+            action: onAddSubscription,
+            tags: ['pay', 'bill', 'rent', 'salary', 'transfer']
         },
         {
             id: 'trailing',
@@ -1806,6 +1933,1305 @@ function ConfigureStrategyModal({ isOpen, onClose, stack, subCard }: ConfigureSt
                 selectedToken={targetToken?.symbol || ""}
             />
         </>
+    )
+}
+
+// ============================================
+// CONFIGURE SUBSCRIPTION MODAL
+// ============================================
+
+interface ConfigureSubscriptionModalProps {
+    isOpen: boolean
+    onClose: () => void
+    stack: StackCardData
+    onSuccess?: () => void
+}
+
+// ============================================
+// CONFIGURE SUBSCRIPTION MODAL (REDESIGN)
+// ============================================
+
+interface ConfigureSubscriptionModalProps {
+    isOpen: boolean
+    onClose: () => void
+    stack: StackCardData
+    onSuccess?: () => void
+}
+
+function ConfigureSubscriptionModal({ isOpen, onClose, stack, onSuccess }: ConfigureSubscriptionModalProps) {
+    // Steps: 'IDENTITY' | 'DETAILS' | 'REVIEW'
+    const [step, setStep] = useState<'IDENTITY' | 'DETAILS' | 'REVIEW'>('IDENTITY')
+    const [isSaving, setIsSaving] = useState(false)
+
+    // Form State
+    const [recipient, setRecipient] = useState("")
+    const [label, setLabel] = useState("") // e.g. Netflix
+    const [amount, setAmount] = useState("")
+    const [frequency, setFrequency] = useState<'WEEKLY' | 'MONTHLY'>('MONTHLY')
+    const [paymentDay, setPaymentDay] = useState<number>(1) // 1st, 15th, or last day (31)
+
+    // Derived
+    const maxAllowedDaily = stack.totalBudget
+    const isAmountTooHigh = Number(amount) > maxAllowedDaily
+
+    // Calculate Next Payment Date based on frequency and paymentDay
+    const calculateNextPaymentDate = (): Date => {
+        const today = new Date()
+        const nextDate = new Date()
+
+        if (frequency === 'MONTHLY') {
+            // For monthly: set to the selected day of the current or next month
+            nextDate.setDate(paymentDay)
+            // If the day has passed this month, move to next month
+            if (nextDate <= today) {
+                nextDate.setMonth(nextDate.getMonth() + 1)
+            }
+            // Handle months with fewer days (e.g., Feb 30 -> Feb 28)
+            if (paymentDay > 28 && nextDate.getDate() !== paymentDay) {
+                nextDate.setDate(0) // Last day of previous month
+            }
+        } else {
+            // For weekly: find the next occurrence of the day of week (0=Sun, 1=Mon, etc.)
+            const daysUntilNext = (paymentDay - today.getDay() + 7) % 7 || 7
+            nextDate.setDate(today.getDate() + daysUntilNext)
+        }
+
+        return nextDate
+    }
+
+    const nextPaymentDate = calculateNextPaymentDate()
+
+    const handleNext = () => {
+        if (step === 'IDENTITY') setStep('DETAILS')
+        else if (step === 'DETAILS') setStep('REVIEW')
+    }
+
+    const handleBack = () => {
+        if (step === 'DETAILS') setStep('IDENTITY')
+        else if (step === 'REVIEW') setStep('DETAILS')
+    }
+
+    const handleSave = async () => {
+        setIsSaving(true)
+        try {
+            const res = await fetch('/api/card-stacks/configure', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    cardStackId: stack.id,
+                    chainId: stack.token.chainId,
+                    type: 'SUBSCRIPTION',
+                    name: `Auto-Pay ${label}`,
+                    color: 'emerald',
+                    allocationPercent: 0,
+                    config: {
+                        targetTokenSymbol: stack.token.symbol,
+                        targetTokenAddress: stack.token.address,
+                        recipient: recipient,
+                        label: label,
+                        frequency: frequency,
+                        paymentDay: paymentDay,
+                        nextPaymentDate: nextPaymentDate.toISOString(),
+                        dailyLimit: amount,
+                        action: 'TRANSFER'
+                    }
+                })
+            })
+
+            const data = await res.json()
+            if (data.success) {
+                toast.success("Subscription Active", `Auto-paying ${label} ${amount} ${stack.token.symbol} ${frequency.toLowerCase()}`)
+                onClose()
+                if (onSuccess) onSuccess()
+            } else {
+                toast.error("Failed", data.error || "Could not create subscription")
+            }
+        } catch (error: any) {
+            toast.error("Error", error.message)
+        } finally {
+            setIsSaving(false)
+        }
+    }
+
+    if (!isOpen) return null
+
+    return (
+        <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center sm:p-4 bg-background/80 backdrop-blur-md"
+        >
+            <div className="absolute inset-0" onClick={onClose} />
+            <motion.div
+                initial={{ y: "100%", opacity: 0 }}
+                animate={{ y: 0, opacity: 1 }}
+                exit={{ y: "100%", opacity: 0 }}
+                transition={{ type: "spring", damping: 25, stiffness: 300 }}
+                className="relative w-full h-[100dvh] sm:h-auto sm:max-h-[90vh] sm:max-w-md bg-card border-t sm:border border-border rounded-t-3xl sm:rounded-3xl shadow-2xl flex flex-col overflow-hidden"
+                onClick={(e) => e.stopPropagation()}
+            >
+                {/* Header */}
+                <div className="flex items-center justify-between p-6 border-b border-border flex-shrink-0">
+                    <div className="flex items-center gap-3">
+                        {step !== 'IDENTITY' && (
+                            <button onClick={handleBack} className="p-2 -ml-2 rounded-full hover:bg-muted transition-colors cursor-pointer">
+                                <ChevronLeft className="w-5 h-5 text-foreground cursor-pointer" />
+                            </button>
+                        )}
+                        <div>
+                            <h2 className="text-lg font-bold text-foreground tracking-tight">New Subscription</h2>
+                            <p className="text-xs text-muted-foreground font-medium">Step {step === 'IDENTITY' ? 1 : step === 'DETAILS' ? 2 : 3} of 3</p>
+                        </div>
+                    </div>
+                    <button onClick={onClose} className="p-2 rounded-full hover:bg-muted transition-colors cursor-pointer">
+                        <X className="w-5 h-5 text-muted-foreground cursor-pointer" />
+                    </button>
+                </div>
+
+                {/* Content */}
+                <div className="flex-1 overflow-y-auto p-6 scrollbar-thin scrollbar-thumb-muted scrollbar-track-transparent">
+                    <AnimatePresence mode="wait">
+                        {step === 'IDENTITY' ? (
+                            <motion.div
+                                key="identity"
+                                initial={{ opacity: 0, x: -20 }}
+                                animate={{ opacity: 1, x: 0 }}
+                                exit={{ opacity: 0, x: 20 }}
+                                className="space-y-6"
+                            >
+                                <div className="space-y-1">
+                                    <h3 className="text-xl font-bold text-foreground">Who are you paying?</h3>
+                                    <p className="text-sm text-muted-foreground">Set up the recipient details.</p>
+                                </div>
+
+                                <div className="space-y-4">
+                                    <div className="space-y-2">
+                                        <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Service Name</label>
+                                        <div className="relative">
+                                            <input
+                                                type="text"
+                                                value={label}
+                                                onChange={(e) => setLabel(e.target.value)}
+                                                placeholder="e.g. Netflix"
+                                                className="w-full bg-muted/50 border border-border rounded-xl px-4 pl-10 py-3 text-sm font-semibold text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-emerald-500/50 transition-colors"
+                                                autoFocus
+                                            />
+                                            <div className="absolute left-3 top-1/2 -translate-y-1/2">
+                                                <div className="w-4 h-4 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center text-[10px] font-bold">
+                                                    {label ? label[0].toUpperCase() : "?"}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Recipient Address</label>
+                                        <div className="relative">
+                                            <Wallet className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                                            <input
+                                                type="text"
+                                                value={recipient}
+                                                onChange={(e) => setRecipient(e.target.value)}
+                                                placeholder="0x... or name.eth"
+                                                className="w-full bg-muted/50 border border-border rounded-xl pl-10 pr-4 py-3 text-sm font-mono text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-emerald-500/50 transition-colors"
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
+                            </motion.div>
+                        ) : step === 'DETAILS' ? (
+                            <motion.div
+                                key="details"
+                                initial={{ opacity: 0, x: 20 }}
+                                animate={{ opacity: 1, x: 0 }}
+                                exit={{ opacity: 0, x: -20 }}
+                                className="space-y-6"
+                            >
+                                <div className="space-y-1">
+                                    <h3 className="text-xl font-bold text-foreground">Payment Details</h3>
+                                    <p className="text-sm text-muted-foreground">How much and how often?</p>
+                                </div>
+
+                                <div className="space-y-4">
+                                    <div className="space-y-2">
+                                        <div className="flex justify-between">
+                                            <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Amount</label>
+                                            <span className="text-xs text-muted-foreground">Max: {maxAllowedDaily} {stack.token.symbol}</span>
+                                        </div>
+                                        <div className="relative">
+                                            <input
+                                                type="number"
+                                                value={amount}
+                                                onChange={(e) => setAmount(e.target.value)}
+                                                placeholder="0.00"
+                                                className="w-full bg-muted/50 border border-border rounded-xl px-4 pl-4 pr-16 py-4 text-2xl font-bold text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-emerald-500/50 transition-colors"
+                                            />
+                                            <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-2">
+                                                <img src={stack.token.logoURI} className="w-6 h-6 rounded-full" />
+                                                <span className="text-sm font-bold text-muted-foreground">{stack.token.symbol}</span>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Frequency</label>
+                                        <div className="grid grid-cols-2 gap-3">
+                                            {['WEEKLY', 'MONTHLY'].map((f) => (
+                                                <button
+                                                    key={f}
+                                                    onClick={() => {
+                                                        setFrequency(f as any)
+                                                        // Reset paymentDay to sensible default when frequency changes
+                                                        setPaymentDay(f === 'WEEKLY' ? 1 : 1) // Monday for weekly, 1st for monthly
+                                                    }}
+                                                    className={`p-4 rounded-xl border text-sm font-bold transition-all cursor-pointer flex flex-col items-center gap-2 ${frequency === f
+                                                        ? 'bg-emerald-500/10 border-emerald-500 text-emerald-600 dark:text-emerald-400'
+                                                        : 'bg-muted border-border text-muted-foreground hover:border-primary/50'
+                                                        }`}
+                                                >
+                                                    <span className="text-lg">{f === 'WEEKLY' ? '📅' : '📆'}</span>
+                                                    {f === 'WEEKLY' ? 'Weekly' : 'Monthly'}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    {/* Payment Day Selector */}
+                                    <div className="space-y-3">
+                                        <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                                            {frequency === 'MONTHLY' ? 'Payment Date' : 'Payment Day'}
+                                        </label>
+
+                                        {frequency === 'MONTHLY' ? (
+                                            <div className="space-y-3">
+                                                {/* Quick Select Pills */}
+                                                <div className="flex gap-2">
+                                                    {[
+                                                        { value: 1, label: '1st' },
+                                                        { value: 15, label: '15th' },
+                                                        { value: 28, label: 'Last' }
+                                                    ].map(({ value, label: dayLabel }) => (
+                                                        <button
+                                                            key={value}
+                                                            onClick={() => setPaymentDay(value)}
+                                                            className={`flex-1 py-2.5 px-4 rounded-xl border text-sm font-bold transition-all cursor-pointer ${paymentDay === value
+                                                                ? 'bg-emerald-500/10 border-emerald-500 text-emerald-600 dark:text-emerald-400'
+                                                                : 'bg-muted border-border text-muted-foreground hover:border-primary/50'
+                                                                }`}
+                                                        >
+                                                            {dayLabel}
+                                                        </button>
+                                                    ))}
+                                                </div>
+
+                                                {/* Horizontal Scroll for All Days */}
+                                                <div className="overflow-x-auto pb-2 scrollbar-thin scrollbar-thumb-muted scrollbar-track-transparent -mx-1 px-1">
+                                                    <div className="flex gap-1.5 min-w-max">
+                                                        {Array.from({ length: 31 }, (_, i) => i + 1).map((day) => (
+                                                            <button
+                                                                key={day}
+                                                                onClick={() => setPaymentDay(day)}
+                                                                className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold transition-all cursor-pointer ${paymentDay === day
+                                                                    ? 'bg-emerald-500 text-white'
+                                                                    : 'bg-muted/50 text-muted-foreground hover:bg-muted'
+                                                                    }`}
+                                                            >
+                                                                {day}
+                                                            </button>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            // Weekly: Show Mon-Sun
+                                            <div className="grid grid-cols-7 gap-1.5">
+                                                {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((day, index) => (
+                                                    <button
+                                                        key={index}
+                                                        onClick={() => setPaymentDay(index + 1)}
+                                                        className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold transition-all cursor-pointer ${paymentDay === index + 1
+                                                            ? 'bg-emerald-500 text-white'
+                                                            : 'bg-muted text-muted-foreground hover:bg-muted/80'
+                                                            }`}
+                                                    >
+                                                        {day}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        )}
+
+                                        {/* Preview next payment date */}
+                                        <div className="flex items-center gap-2 p-2.5 rounded-lg bg-emerald-500/5 border border-emerald-500/20">
+                                            <CalendarCheck className="w-4 h-4 text-emerald-500" />
+                                            <span className="text-xs font-medium text-foreground">
+                                                First payment: <strong>{nextPaymentDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}</strong>
+                                            </span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </motion.div>
+                        ) : (
+                            <motion.div
+                                key="review"
+                                initial={{ opacity: 0, x: 20 }}
+                                animate={{ opacity: 1, x: 0 }}
+                                exit={{ opacity: 0, x: -20 }}
+                                className="space-y-6"
+                            >
+                                <div className="flex flex-col items-center py-4">
+                                    <div className="relative">
+                                        <div className="w-20 h-20 rounded-full bg-muted flex items-center justify-center border border-border z-10 relative overflow-hidden">
+                                            <img
+                                                src={`https://img.logo.dev/${label.toLowerCase().trim().replace(/\s+/g, '')}.com?token=pk_123`}
+                                                onError={(e) => (e.currentTarget.src = "https://via.placeholder.com/64?text=?")}
+                                                className="w-full h-full object-cover"
+                                                alt="Service"
+                                            />
+                                        </div>
+                                        {/* Pulse Effect */}
+                                        <motion.div
+                                            className="absolute inset-0 rounded-full bg-emerald-500/30 -z-10"
+                                            animate={{ scale: [1, 1.4, 1], opacity: [0.5, 0, 0.5] }}
+                                            transition={{ duration: 2, repeat: Infinity }}
+                                        />
+                                    </div>
+                                    <h3 className="text-2xl font-bold text-foreground mt-4">{label}</h3>
+                                    <p className="text-sm text-muted-foreground">Subscription</p>
+                                </div>
+
+                                <div className="bg-muted/30 rounded-2xl border border-border p-5 space-y-4">
+                                    <div className="flex justify-between items-center">
+                                        <span className="text-sm text-muted-foreground">Amount</span>
+                                        <span className="text-lg font-bold text-foreground">{amount} {stack.token.symbol}</span>
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                        <span className="text-sm text-muted-foreground">Frequency</span>
+                                        <span className="text-sm font-bold text-foreground capitalize">{frequency.toLowerCase()}</span>
+                                    </div>
+                                    <div className="flex justify-between items-center pt-4 border-t border-border">
+                                        <span className="text-sm text-muted-foreground">Next Pay</span>
+                                        <span className="text-sm font-bold text-emerald-600 dark:text-emerald-400">{nextPaymentDate.toLocaleDateString()}</span>
+                                    </div>
+                                </div>
+                            </motion.div>
+                        )}
+                    </AnimatePresence>
+                </div>
+
+                {/* Footer */}
+                <div className="p-6 border-t border-border bg-card flex-shrink-0">
+                    {step === 'REVIEW' ? (
+                        <motion.button
+                            whileHover={{ scale: 1.02 }}
+                            whileTap={{ scale: 0.98 }}
+                            onClick={handleSave}
+                            disabled={isSaving}
+                            className="w-full py-4 rounded-xl bg-emerald-500 text-white font-bold text-sm hover:bg-emerald-600 transition-colors cursor-pointer flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20"
+                        >
+                            {isSaving ? <Loader2 className="w-5 h-5 animate-spin" /> : <Check className="w-5 h-5" />}
+                            {isSaving ? "Activating..." : "Confirm Subscription"}
+                        </motion.button>
+                    ) : (
+                        <motion.button
+                            whileHover={{ scale: 1.02 }}
+                            whileTap={{ scale: 0.98 }}
+                            onClick={handleNext}
+                            disabled={step === 'IDENTITY' ? (!label || !recipient) : (!amount)}
+                            className="w-full py-4 rounded-xl bg-primary text-primary-foreground font-bold text-sm hover:opacity-90 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                        >
+                            Next Step <ArrowRight className="w-4 h-4" />
+                        </motion.button>
+                    )}
+                </div>
+            </motion.div>
+        </motion.div>
+    )
+}
+
+// ============================================
+// STACK MANAGEMENT MODAL
+// ============================================
+
+interface StackManagementModalProps {
+    isOpen: boolean
+    onClose: () => void
+    stack: StackCardData
+    onSuccess: () => void
+}
+
+function StackManagementModal({ isOpen, onClose, stack, onSuccess }: StackManagementModalProps) {
+    const [view, setView] = useState<'MENU' | 'EDIT' | 'SIGNING' | 'SUCCESS'>('MENU')
+    const [confirmDelete, setConfirmDelete] = useState(false)
+    const [isLoading, setIsLoading] = useState(false)
+    const [statusMsg, setStatusMsg] = useState("")
+    const [newBudget, setNewBudget] = useState(stack.totalBudget.toString())
+    const [newPeriod, setNewPeriod] = useState(stack.periodDuration)
+
+    useEffect(() => {
+        if (isOpen) {
+            setView('MENU')
+            setConfirmDelete(false)
+            setNewBudget(stack.totalBudget.toString())
+            setNewPeriod(stack.periodDuration)
+        }
+    }, [isOpen, stack])
+
+    if (!isOpen) return null
+
+    const periods = [{ label: 'Daily', value: 86400 }, { label: 'Weekly', value: 604800 }, { label: 'Monthly', value: 2592000 }]
+
+    const handleUpdate = async () => {
+        setIsLoading(true)
+        setView('SIGNING')
+        setStatusMsg("Initializing wallet...")
+        try {
+            if (!window.ethereum) throw new Error("Wallet not found")
+            const chainId = stack.token.chainId
+            const walletClient = createWalletClient({ chain: getViemChain(chainId), transport: custom(window.ethereum as any) }).extend(erc7715ProviderActions())
+
+            setStatusMsg("Requesting account access...")
+            const [account] = await walletClient.requestAddresses()
+            setStatusMsg("Switching chain...")
+            try { await walletClient.switchChain({ id: chainId }) } catch (e) { }
+
+            setStatusMsg("Configuring session...")
+            const agentRes = await fetch(`/api/smart-cards/agent-address?chainId=${chainId}`)
+            const agentData = await agentRes.json()
+            if (!agentData.success || !agentData.agentSmartAccountAddress) throw new Error("Failed to get Agent Address")
+            const sessionAccountAddress = agentData.agentSmartAccountAddress as `0x${string}`
+
+            const expiry = Math.floor(Date.now() / 1000) + (90 * 24 * 60 * 60)
+            const periodAmount = parseUnits(newBudget, stack.token.decimals)
+            const periodLabel = periods.find(p => p.value === newPeriod)?.label.toLowerCase() || "period"
+
+            setStatusMsg("Please sign the update in MetaMask...")
+            const grantedPermissions = await walletClient.requestExecutionPermissions([{
+                chainId: chainId, expiry,
+                signer: { type: "account", data: { address: sessionAccountAddress } },
+                permission: {
+                    type: "erc20-token-periodic",
+                    data: {
+                        tokenAddress: stack.token.address as `0x${string}`,
+                        periodAmount, periodDuration: newPeriod,
+                        justification: `Update Stack: ${newBudget} ${stack.token.symbol}/${periodLabel}`
+                    }
+                },
+                isAdjustmentAllowed: true
+            }])
+            const permission = grantedPermissions[0]
+            if (!permission?.context) throw new Error("Permission denied")
+
+            setStatusMsg("Saving changes...")
+            const updateRes = await fetch('/api/card-stacks/update', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ stackId: stack.id, totalBudget: parseFloat(newBudget), periodDuration: newPeriod, permissionsContext: permission.context })
+            })
+            const updateData = await updateRes.json()
+            if (!updateData.success) throw new Error(updateData.error)
+
+            setView('SUCCESS')
+            if (onSuccess) onSuccess()
+        } catch (error: any) {
+            console.error(error)
+            toast.error("Update Failed", error.message)
+            setView('EDIT')
+        } finally { setIsLoading(false) }
+    }
+
+    const handleDelete = async () => {
+        setIsLoading(true)
+        try {
+            const res = await fetch('/api/card-stacks/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stackId: stack.id }) })
+            const data = await res.json()
+            if (data.success) {
+                toast.success('Stack Deleted', 'Stack removed successfully')
+                setConfirmDelete(false)
+                onClose()
+                if (onSuccess) onSuccess()
+            } else { toast.error('Failed', data.error) }
+        } catch (error: any) { toast.error('Error', error.message) } finally { setIsLoading(false) }
+    }
+
+    return (
+        <AnimatePresence>
+            {isOpen && (
+                <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center sm:p-4">
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="absolute inset-0 bg-background/80 backdrop-blur-md"
+                        onClick={onClose}
+                    />
+                    <motion.div
+                        initial={{ y: "100%", opacity: 0 }}
+                        animate={{ y: 0, opacity: 1 }}
+                        exit={{ y: "100%", opacity: 0 }}
+                        transition={{ type: "spring", damping: 25, stiffness: 300 }}
+                        className="relative w-full sm:max-w-md bg-card border-t sm:border border-border rounded-t-3xl sm:rounded-3xl shadow-2xl overflow-hidden"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        {confirmDelete ? (
+                            <div className="p-6">
+                                <div className="text-center mb-6">
+                                    <div className="w-16 h-16 rounded-full bg-red-100 text-red-600 flex items-center justify-center mx-auto mb-4">
+                                        <Trash2 className="w-8 h-8" />
+                                    </div>
+                                    <h3 className="text-lg font-bold">Delete Stack?</h3>
+                                    <p className="text-sm text-muted-foreground mt-2">
+                                        This will permanently remove <strong>{stack.name}</strong> and all its active strategies. This action cannot be undone.
+                                    </p>
+                                </div>
+                                <div className="flex gap-3">
+                                    <button
+                                        onClick={() => setConfirmDelete(false)}
+                                        className="flex-1 px-4 py-3 rounded-xl font-semibold bg-muted hover:bg-muted/80 text-foreground transition-colors"
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button
+                                        onClick={handleDelete}
+                                        disabled={isLoading}
+                                        className="flex-1 px-4 py-3 rounded-xl font-semibold bg-red-500 hover:bg-red-600 text-white transition-colors flex items-center justify-center gap-2"
+                                    >
+                                        {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Delete Stack"}
+                                    </button>
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="p-6">
+                                <div className="flex items-center justify-between mb-6">
+                                    <div className="flex items-center gap-3">
+                                        <div className="w-10 h-10 rounded-xl bg-secondary flex items-center justify-center">
+                                            {stack.token.logoURI ? (
+                                                <img src={stack.token.logoURI} alt="" className="w-6 h-6" />
+                                            ) : (
+                                                <Zap className="w-5 h-5 text-primary" />
+                                            )}
+                                        </div>
+                                        <div>
+                                            <h3 className="font-bold text-foreground">{stack.name}</h3>
+                                            <p className="text-xs text-muted-foreground">{getChainById(stack.token.chainId)?.name}</p>
+                                        </div>
+                                    </div>
+                                    <button onClick={onClose} className="p-2 rounded-full hover:bg-muted/50 text-muted-foreground">
+                                        <X className="w-5 h-5" />
+                                    </button>
+                                </div>
+
+                                <div className="space-y-2">
+                                    <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Stack Settings</h4>
+
+                                    {/* Edit Budget (Disabled) */}
+                                    <div className="group flex items-center justify-between p-4 rounded-xl border border-border bg-muted/20 opacity-60 cursor-not-allowed">
+                                        <div className="flex items-center gap-3">
+                                            <div className="p-2 rounded-lg bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">
+                                                <Wallet className="w-5 h-5" />
+                                            </div>
+                                            <div className="text-left">
+                                                <div className="font-semibold text-sm">Transfer Limit</div>
+                                                <div className="text-xs text-muted-foreground">Change budget or period</div>
+                                            </div>
+                                        </div>
+                                        <span className="text-[10px] font-medium px-2 py-1 rounded bg-secondary text-muted-foreground">Soon</span>
+                                    </div>
+
+                                    {/* Delete Stack (Active) */}
+                                    <button
+                                        onClick={() => setConfirmDelete(true)}
+                                        className="w-full group flex items-center justify-between p-4 rounded-xl border border-red-200/50 bg-red-50/50 hover:bg-red-100/50 hover:border-red-200 dark:bg-red-900/10 dark:hover:bg-red-900/20 dark:border-red-900/30 transition-all"
+                                    >
+                                        <div className="flex items-center gap-3">
+                                            <div className="p-2 rounded-lg bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400">
+                                                <Trash2 className="w-5 h-5" />
+                                            </div>
+                                            <div className="text-left">
+                                                <div className="font-semibold text-sm text-red-700 dark:text-red-400">Delete Stack</div>
+                                                <div className="text-xs text-red-600/70 dark:text-red-400/70">Remove stack and strategies</div>
+                                            </div>
+                                        </div>
+                                        <ChevronRight className="w-5 h-5 text-red-400/50 group-hover:text-red-500 transition-colors" />
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+                    </motion.div>
+                </div>
+            )}
+        </AnimatePresence>
+    )
+}
+
+function StackManagementModalUpdated({ isOpen, onClose, stack, onSuccess }: StackManagementModalProps) {
+    const [view, setView] = useState<'MENU' | 'EDIT' | 'SIGNING' | 'SUCCESS'>('MENU')
+    const [confirmDelete, setConfirmDelete] = useState(false)
+    const [isLoading, setIsLoading] = useState(false)
+    const [statusMsg, setStatusMsg] = useState("")
+    const [newBudget, setNewBudget] = useState(stack.totalBudget.toString())
+    const [newPeriod, setNewPeriod] = useState(stack.periodDuration)
+
+    useEffect(() => {
+        if (isOpen) {
+            setView('MENU')
+            setConfirmDelete(false)
+            setNewBudget(stack.totalBudget.toString())
+            setNewPeriod(stack.periodDuration)
+        }
+    }, [isOpen, stack])
+
+    if (!isOpen) return null
+
+    const periods = [
+        { label: 'Daily', value: 86400 },
+        { label: 'Weekly', value: 604800 },
+        { label: 'Monthly', value: 2592000 },
+    ]
+
+    const handleUpdate = async () => {
+        setIsLoading(true)
+        setView('SIGNING')
+        setStatusMsg("Initializing wallet...")
+
+        try {
+            if (!window.ethereum) throw new Error("Wallet not found")
+            const chainId = stack.token.chainId
+
+            const walletClient = createWalletClient({
+                chain: getViemChain(chainId),
+                transport: custom(window.ethereum as any)
+            }).extend(erc7715ProviderActions())
+
+            setStatusMsg("Requesting account access...")
+            const [account] = await walletClient.requestAddresses()
+
+            setStatusMsg("Switching chain...")
+            try {
+                await walletClient.switchChain({ id: chainId })
+            } catch (e) {
+                // Ignore if already on chain
+            }
+
+            // Fetch Agent Address
+            setStatusMsg("Configuring session...")
+            const agentRes = await fetch(`/api/smart-cards/agent-address?chainId=${chainId}`)
+            const agentData = await agentRes.json()
+            if (!agentData.success || !agentData.agentSmartAccountAddress) {
+                throw new Error("Failed to get Agent Address")
+            }
+            const sessionAccountAddress = agentData.agentSmartAccountAddress as `0x${string}`
+
+            // Request Permissions
+            const expiry = Math.floor(Date.now() / 1000) + (90 * 24 * 60 * 60) // 90 days
+            const periodAmount = parseUnits(newBudget, stack.token.decimals)
+            const tokenAddress = stack.token.address
+            const periodLabel = periods.find(p => p.value === newPeriod)?.label.toLowerCase() || "period"
+
+            setStatusMsg("Please sign the update in MetaMask...")
+
+            const grantedPermissions = await walletClient.requestExecutionPermissions([{
+                chainId: chainId,
+                expiry,
+                signer: {
+                    type: "account",
+                    data: { address: sessionAccountAddress }
+                },
+                permission: {
+                    type: "erc20-token-periodic",
+                    data: {
+                        tokenAddress: tokenAddress as `0x${string}`,
+                        periodAmount,
+                        periodDuration: newPeriod,
+                        justification: `Update Stack: ${newBudget} ${stack.token.symbol}/${periodLabel}`
+                    }
+                },
+                isAdjustmentAllowed: true
+            }])
+
+            const permission = grantedPermissions[0]
+            if (!permission?.context) throw new Error("Permission denied or invalid")
+
+            // Update Backend
+            setStatusMsg("Saving changes...")
+            const updateRes = await fetch('/api/card-stacks/update', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    stackId: stack.id,
+                    totalBudget: parseFloat(newBudget),
+                    periodDuration: newPeriod,
+                    permissionsContext: permission.context
+                })
+            })
+
+            const updateData = await updateRes.json()
+            if (!updateData.success) throw new Error(updateData.error)
+
+            setView('SUCCESS')
+            if (onSuccess) onSuccess()
+
+        } catch (error: any) {
+            console.error(error)
+            toast.error("Update Failed", error.message)
+            setView('EDIT') // Go back to EDIT on error
+        } finally {
+            setIsLoading(false)
+        }
+    }
+
+    const handleDelete = async () => {
+        setIsLoading(true)
+        try {
+            const res = await fetch('/api/card-stacks/delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ stackId: stack.id })
+            })
+            const data = await res.json()
+            if (data.success) {
+                toast.success('Stack Deleted', 'Stack removed successfully')
+                setConfirmDelete(false)
+                onClose()
+                if (onSuccess) onSuccess()
+            } else {
+                toast.error('Failed', data.error)
+            }
+        } catch (error: any) {
+            toast.error('Error', error.message)
+        } finally {
+            setIsLoading(false)
+        }
+    }
+
+    return (
+        <AnimatePresence>
+            {isOpen && (
+                <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center sm:p-4">
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="absolute inset-0 bg-background/80 backdrop-blur-md"
+                        onClick={onClose}
+                    />
+                    <motion.div
+                        initial={{ y: "100%", opacity: 0 }}
+                        animate={{ y: 0, opacity: 1 }}
+                        exit={{ y: "100%", opacity: 0 }}
+                        transition={{ type: "spring", damping: 25, stiffness: 300 }}
+                        className="relative w-full sm:max-w-md bg-card border-t sm:border border-border rounded-t-3xl sm:rounded-3xl shadow-2xl overflow-hidden"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <AnimatePresence mode="wait">
+                            {view === 'MENU' && (
+                                <motion.div key="menu" initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}>
+                                    {confirmDelete ? (
+                                        <div className="p-6">
+                                            <div className="text-center mb-6">
+                                                <div className="w-16 h-16 rounded-full bg-red-100 text-red-600 flex items-center justify-center mx-auto mb-4">
+                                                    <Trash2 className="w-8 h-8" />
+                                                </div>
+                                                <h3 className="text-lg font-bold">Delete Stack?</h3>
+                                                <p className="text-sm text-muted-foreground mt-2">
+                                                    Permanently remove <strong>{stack.name}</strong> and all strategies?
+                                                </p>
+                                            </div>
+                                            <div className="flex gap-3">
+                                                <button onClick={() => setConfirmDelete(false)} className="flex-1 px-4 py-3 rounded-xl font-semibold bg-muted hover:bg-muted/80 transition-colors">Cancel</button>
+                                                <button onClick={handleDelete} disabled={isLoading} className="flex-1 px-4 py-3 rounded-xl font-semibold bg-red-500 hover:bg-red-600 text-white transition-colors flex items-center justify-center gap-2">
+                                                    {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Delete Stack"}
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <div className="p-6">
+                                            <div className="flex items-center justify-between mb-6">
+                                                <div className="flex items-center gap-3">
+                                                    <div className="w-10 h-10 rounded-xl bg-secondary flex items-center justify-center">
+                                                        {stack.token.logoURI ? <img src={stack.token.logoURI} alt="" className="w-6 h-6" /> : <Zap className="w-5 h-5 text-primary" />}
+                                                    </div>
+                                                    <div>
+                                                        <h3 className="font-bold text-foreground">{stack.name}</h3>
+                                                        <p className="text-xs text-muted-foreground">{getChainById(stack.token.chainId)?.name}</p>
+                                                    </div>
+                                                </div>
+                                                <button onClick={onClose} className="p-2 rounded-full hover:bg-muted/50 text-muted-foreground"><X className="w-5 h-5" /></button>
+                                            </div>
+
+                                            <div className="space-y-3">
+                                                {/* Edit Budget */}
+                                                <button
+                                                    onClick={() => setView('EDIT')}
+                                                    className="w-full group flex items-center justify-between p-4 rounded-xl border border-border bg-card hover:bg-muted/50 transition-all text-left"
+                                                >
+                                                    <div className="flex items-center gap-3">
+                                                        <div className="p-2 rounded-lg bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">
+                                                            <Wallet className="w-5 h-5" />
+                                                        </div>
+                                                        <div>
+                                                            <div className="font-semibold text-sm">Edit Budget & Period</div>
+                                                            <div className="text-xs text-muted-foreground">Adjust limits and frequency</div>
+                                                        </div>
+                                                    </div>
+                                                    <ChevronRight className="w-5 h-5 text-muted-foreground group-hover:text-foreground transition-colors" />
+                                                </button>
+
+                                                {/* Delete Stack */}
+                                                <button
+                                                    onClick={() => setConfirmDelete(true)}
+                                                    className="w-full group flex items-center justify-between p-4 rounded-xl border border-red-200/50 bg-red-50/10 hover:bg-red-100/30 hover:border-red-200 dark:bg-red-900/10 dark:hover:bg-red-900/20 dark:border-red-900/30 transition-all text-left"
+                                                >
+                                                    <div className="flex items-center gap-3">
+                                                        <div className="p-2 rounded-lg bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400">
+                                                            <Trash2 className="w-5 h-5" />
+                                                        </div>
+                                                        <div>
+                                                            <div className="font-semibold text-sm text-red-700 dark:text-red-400">Delete Stack</div>
+                                                            <div className="text-xs text-red-600/70 dark:text-red-400/70">Remove stack and strategies</div>
+                                                        </div>
+                                                    </div>
+                                                    <ChevronRight className="w-5 h-5 text-red-400/50 group-hover:text-red-500 transition-colors" />
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
+                                </motion.div>
+                            )}
+
+                            {view === 'EDIT' && (
+                                <motion.div key="edit" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }} className="p-6">
+                                    <div className="flex items-center justify-between mb-6">
+                                        <button onClick={() => setView('MENU')} className="flex items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground">
+                                            <ChevronLeft className="w-4 h-4" /> Back
+                                        </button>
+                                        <h3 className="font-bold">Edit Stack</h3>
+                                        <div className="w-8" />
+                                    </div>
+
+                                    <div className="space-y-6">
+                                        <div>
+                                            <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2 block">New Budget Limit</label>
+                                            <div className="relative">
+                                                <input
+                                                    type="number"
+                                                    value={newBudget}
+                                                    onChange={e => setNewBudget(e.target.value)}
+                                                    className="w-full bg-muted/50 border border-border rounded-xl px-4 py-4 text-xl font-mono font-bold focus:outline-none focus:ring-2 focus:ring-primary/50"
+                                                    placeholder="0.00"
+                                                />
+                                                <div className="absolute right-4 top-1/2 -translate-y-1/2 font-bold text-muted-foreground">
+                                                    {stack.token.symbol}
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div>
+                                            <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2 block">Reset Period</label>
+                                            <div className="grid grid-cols-3 gap-2">
+                                                {periods.map(p => (
+                                                    <button
+                                                        key={p.value}
+                                                        onClick={() => setNewPeriod(p.value)}
+                                                        className={cn(
+                                                            "py-3 rounded-xl text-sm font-medium border transition-all",
+                                                            newPeriod === p.value
+                                                                ? "bg-primary text-primary-foreground border-primary shadow-lg shadow-primary/20"
+                                                                : "bg-background border-border hover:border-primary/50 text-muted-foreground hover:text-foreground"
+                                                        )}
+                                                    >
+                                                        {p.label}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+
+                                        <button
+                                            onClick={handleUpdate}
+                                            disabled={isLoading || !newBudget || parseFloat(newBudget) <= 0}
+                                            className="w-full py-4 bg-primary text-primary-foreground rounded-xl font-bold mt-4 hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-lg shadow-primary/20 flex items-center justify-center gap-2"
+                                        >
+                                            {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : "Update Stack"}
+                                        </button>
+                                    </div>
+                                </motion.div>
+                            )}
+
+                            {view === 'SIGNING' && (
+                                <motion.div key="signing" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="p-10 flex flex-col items-center justify-center text-center min-h-[300px]">
+                                    <div className="relative mb-8">
+                                        <div className="absolute inset-0 bg-primary/20 blur-xl rounded-full animate-pulse" />
+                                        <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-primary to-violet-600 flex items-center justify-center relative z-10 shadow-xl">
+                                            <Shield className="w-10 h-10 text-white" />
+                                        </div>
+                                    </div>
+                                    <h3 className="text-xl font-bold mb-2">Sign Request</h3>
+                                    <p className="text-muted-foreground max-w-[200px] mx-auto animate-pulse">{statusMsg || "Please check your wallet..."}</p>
+                                </motion.div>
+                            )}
+
+                            {view === 'SUCCESS' && (
+                                <motion.div key="success" initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }} className="p-10 flex flex-col items-center justify-center text-center min-h-[300px]">
+                                    <div className="w-20 h-20 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center mb-6">
+                                        <Check className="w-10 h-10" />
+                                    </div>
+                                    <h3 className="text-2xl font-bold text-foreground">Stack Updated!</h3>
+                                    <p className="text-muted-foreground mt-2">
+                                        New Limit: {newBudget} {stack.token.symbol} / {periods.find(p => p.value === newPeriod)?.label}
+                                    </p>
+                                    <button onClick={onClose} className="mt-8 w-full py-4 bg-secondary text-secondary-foreground rounded-xl font-bold hover:bg-secondary/80 transition-colors">
+                                        Done
+                                    </button>
+                                </motion.div>
+                            )}
+                        </AnimatePresence>
+                    </motion.div>
+                </div>
+            )}
+        </AnimatePresence>
+    )
+}
+
+// ============================================
+// STRATEGY MANAGEMENT MODAL (AWARD-WINNING)
+// ============================================
+
+interface StrategyManagementModalProps {
+    isOpen: boolean
+    onClose: () => void
+    stack: StackCardData
+    strategy: StackCardData['subCards'][0]
+    onSuccess?: () => void
+}
+
+function StrategyManagementModal({ isOpen, onClose, stack, strategy, onSuccess }: StrategyManagementModalProps) {
+    const [confirmAction, setConfirmAction] = useState<'PAUSE' | 'RESUME' | 'DELETE' | 'SKIP' | null>(null)
+    const [isLoading, setIsLoading] = useState(false)
+
+    const config = strategy.config as any
+    const isPaused = strategy.status === 'paused'
+
+    // Determine Strategy Type
+    const isSubscription = strategy.type === 'SUBSCRIPTION' || strategy.name?.includes("Auto-Pay")
+    const isLimit = strategy.type === 'LIMIT_ORDER'
+    const isDCA = !isSubscription && !isLimit
+
+    // Label Logic
+    let displayLabel = config?.label || strategy.name
+    if (isSubscription && !config?.label) {
+        if (strategy.name.startsWith("Auto-Pay ")) displayLabel = strategy.name.replace("Auto-Pay ", "")
+        else if (config?.recipient) displayLabel = `${config.recipient.slice(0, 6)}...`
+    } else if (isLimit) {
+        displayLabel = "Limit Order"
+    } else if (isDCA && !isSubscription) {
+        displayLabel = "DCA Strategy"
+    }
+
+    const nextPaymentDate = (isSubscription && config?.nextPaymentDate) ? new Date(config.nextPaymentDate) : null
+
+    // Calculate days until next payment (Subs only)
+    const daysUntilPayment = nextPaymentDate
+        ? Math.ceil((nextPaymentDate.getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24))
+        : null
+
+    const handleAction = async (action: 'PAUSE' | 'RESUME' | 'DELETE' | 'SKIP') => {
+        setIsLoading(true)
+        try {
+            const endpoint = action === 'DELETE'
+                ? `/api/card-stacks/delete-subcard`
+                : `/api/card-stacks/update-subcard`
+
+            const body = action === 'DELETE'
+                ? { subCardId: strategy.id }
+                : {
+                    subCardId: strategy.id,
+                    status: action === 'PAUSE' ? 'PAUSED' : action === 'RESUME' ? 'ACTIVE' : undefined,
+                    skipNext: action === 'SKIP' ? true : undefined
+                }
+
+            const res = await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            })
+
+            const data = await res.json()
+            if (data.success) {
+                const messages = {
+                    PAUSE: { title: 'Strategy Paused', desc: `${displayLabel} won't execute` },
+                    RESUME: { title: 'Strategy Active', desc: `${displayLabel} is running` },
+                    DELETE: { title: 'Strategy Deleted', desc: `${displayLabel} removed` },
+                    SKIP: { title: 'Run Skipped', desc: `Next ${displayLabel} run skipped` }
+                }
+                toast.success(messages[action].title, messages[action].desc)
+                setConfirmAction(null)
+                onClose()
+                if (onSuccess) onSuccess()
+            } else {
+                toast.error('Action Failed', data.error || 'Please try again')
+            }
+        } catch (error: any) {
+            toast.error('Error', error.message)
+        } finally {
+            setIsLoading(false)
+        }
+    }
+
+    if (!isOpen) return null
+
+    return (
+        <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center sm:p-4 bg-background/80 backdrop-blur-md"
+        >
+            <div className="absolute inset-0" onClick={onClose} />
+            <motion.div
+                initial={{ y: "100%", opacity: 0 }}
+                animate={{ y: 0, opacity: 1 }}
+                exit={{ y: "100%", opacity: 0 }}
+                transition={{ type: "spring", damping: 25, stiffness: 300 }}
+                className="relative w-full sm:max-w-md bg-card border-t sm:border border-border rounded-t-3xl sm:rounded-3xl shadow-2xl overflow-hidden"
+                onClick={(e) => e.stopPropagation()}
+            >
+                <AnimatePresence mode="wait">
+                    {confirmAction ? (
+                        // Confirmation Dialog
+                        <motion.div
+                            key="confirm"
+                            initial={{ opacity: 0, scale: 0.95 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            exit={{ opacity: 0, scale: 0.95 }}
+                            className="p-6"
+                        >
+                            <div className="flex flex-col items-center text-center mb-6">
+                                <motion.div
+                                    initial={{ scale: 0, rotate: -180 }}
+                                    animate={{ scale: 1, rotate: 0 }}
+                                    transition={{ type: "spring", damping: 15, stiffness: 200 }}
+                                    className={`w-16 h-16 rounded-full flex items-center justify-center mb-4 ${confirmAction === 'DELETE' ? 'bg-red-100 dark:bg-red-900/30' :
+                                        confirmAction === 'PAUSE' ? 'bg-amber-100 dark:bg-amber-900/30' :
+                                            'bg-emerald-100 dark:bg-emerald-900/30'
+                                        }`}
+                                >
+                                    {confirmAction === 'DELETE' && <Trash2 className="w-7 h-7 text-red-600 dark:text-red-400" />}
+                                    {confirmAction === 'PAUSE' && <Ban className="w-7 h-7 text-amber-600 dark:text-amber-400" />}
+                                    {confirmAction === 'RESUME' && <Play className="w-7 h-7 text-emerald-600 dark:text-emerald-400" />}
+                                    {confirmAction === 'SKIP' && <ArrowRight className="w-7 h-7 text-emerald-600 dark:text-emerald-400" />}
+                                </motion.div>
+
+                                <h3 className="text-xl font-bold text-foreground mb-2">
+                                    {confirmAction === 'DELETE' && 'Delete Strategy?'}
+                                    {confirmAction === 'PAUSE' && 'Pause Strategy?'}
+                                    {confirmAction === 'RESUME' && 'Resume Strategy?'}
+                                    {confirmAction === 'SKIP' && 'Skip Next Run?'}
+                                </h3>
+
+                                <p className="text-sm text-muted-foreground">
+                                    {confirmAction === 'DELETE' && `This will permanently remove ${displayLabel}. You can always create a new one.`}
+                                    {confirmAction === 'PAUSE' && `${displayLabel} will be paused until you resume.`}
+                                    {confirmAction === 'RESUME' && `${displayLabel} will resume operations.`}
+                                    {confirmAction === 'SKIP' && `The next scheduled run for ${displayLabel} will be skipped.`}
+                                </p>
+                            </div>
+
+                            <div className="flex gap-3">
+                                <motion.button
+                                    whileHover={{ scale: 1.02 }}
+                                    whileTap={{ scale: 0.98 }}
+                                    onClick={() => setConfirmAction(null)}
+                                    disabled={isLoading}
+                                    className="flex-1 py-3 rounded-xl border border-border text-foreground font-semibold text-sm hover:bg-muted transition-colors cursor-pointer"
+                                >
+                                    Cancel
+                                </motion.button>
+                                <motion.button
+                                    whileHover={{ scale: 1.02 }}
+                                    whileTap={{ scale: 0.98 }}
+                                    onClick={() => handleAction(confirmAction)}
+                                    disabled={isLoading}
+                                    className={`flex-1 py-3 rounded-xl font-semibold text-sm transition-colors cursor-pointer flex items-center justify-center gap-2 ${confirmAction === 'DELETE'
+                                        ? 'bg-red-500 text-white hover:bg-red-600'
+                                        : confirmAction === 'PAUSE'
+                                            ? 'bg-amber-500 text-white hover:bg-amber-600'
+                                            : 'bg-emerald-500 text-white hover:bg-emerald-600'
+                                        }`}
+                                >
+                                    {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                                    {isLoading ? 'Processing...' : 'Confirm'}
+                                </motion.button>
+                            </div>
+                        </motion.div>
+                    ) : (
+                        // Main Actions View
+                        <motion.div
+                            key="main"
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                        >
+                            {/* Header with Service Info */}
+                            <div className="p-6 border-b border-border">
+                                <div className="flex items-center gap-4">
+                                    <div className="w-14 h-14 rounded-2xl bg-muted flex items-center justify-center border border-border overflow-hidden">
+                                        {isSubscription ? (
+                                            <img
+                                                src={`https://img.logo.dev/${displayLabel.toLowerCase().trim().replace(/\s+/g, '')}.com?token=pk_123`}
+                                                onError={(e) => (e.currentTarget.src = "https://via.placeholder.com/56?text=" + displayLabel[0]?.toUpperCase())}
+                                                className="w-full h-full object-cover"
+                                                alt={displayLabel}
+                                            />
+                                        ) : (
+                                            <img
+                                                src={stack.token.logoURI || "https://via.placeholder.com/56"}
+                                                className="w-full h-full object-cover"
+                                                alt={stack.token.symbol}
+                                            />
+                                        )}
+                                    </div>
+                                    <div className="flex-1">
+                                        <h2 className="text-lg font-bold text-foreground">{displayLabel}</h2>
+                                        <div className="flex items-center gap-2 mt-1">
+                                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${isPaused
+                                                ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
+                                                : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
+                                                }`}>
+                                                {isPaused ? 'PAUSED' : 'ACTIVE'}
+                                            </span>
+                                            {isSubscription && (
+                                                <span className="text-xs text-muted-foreground">
+                                                    {config?.dailyLimit} {stack.token.symbol} • {config?.frequency?.toLowerCase()}
+                                                </span>
+                                            )}
+                                            {isDCA && (
+                                                <span className="text-xs text-muted-foreground">
+                                                    {config?.dailyLimit || config?.amountPerExecution} {stack.token.symbol} / execution
+                                                </span>
+                                            )}
+                                            {isLimit && (
+                                                <span className="text-xs text-muted-foreground">
+                                                    Target: ${config?.targetPrice}
+                                                </span>
+                                            )}
+                                        </div>
+                                    </div>
+                                    <button onClick={onClose} className="p-2 rounded-full hover:bg-muted transition-colors cursor-pointer">
+                                        <X className="w-5 h-5 text-muted-foreground" />
+                                    </button>
+                                </div>
+
+                                {/* Next Payment Info (Subs Only) */}
+                                {isSubscription && nextPaymentDate && !isPaused && (
+                                    <div className="mt-4 p-3 rounded-xl bg-muted/50 border border-border/50">
+                                        <div className="flex items-center justify-between">
+                                            <div className="flex items-center gap-2">
+                                                <CalendarCheck className="w-4 h-4 text-emerald-500" />
+                                                <span className="text-sm text-muted-foreground">Next Payment</span>
+                                            </div>
+                                            <span className="text-sm font-bold text-foreground">
+                                                {daysUntilPayment !== null && daysUntilPayment <= 0
+                                                    ? 'Due Today!'
+                                                    : daysUntilPayment === 1
+                                                        ? 'Tomorrow'
+                                                        : nextPaymentDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
+                                            </span>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* Action Cards */}
+                            <div className="p-4 space-y-2">
+                                {/* Edit */}
+                                <motion.button
+                                    whileHover={{ scale: 1.01, backgroundColor: 'hsl(var(--muted))' }}
+                                    whileTap={{ scale: 0.99 }}
+                                    onClick={() => {
+                                        onClose()
+                                        // Will trigger edit flow
+                                        toast.success('Coming Soon', 'Edit functionality will be available soon')
+                                    }}
+                                    className="w-full p-4 rounded-xl border border-border bg-card hover:bg-muted/50 transition-all cursor-pointer flex items-center gap-4"
+                                >
+                                    <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
+                                        <Settings2 className="w-5 h-5 text-primary" />
+                                    </div>
+                                    <div className="flex-1 text-left">
+                                        <span className="text-sm font-semibold text-foreground block">Edit Settings</span>
+                                        <span className="text-xs text-muted-foreground">Change amount or settings</span>
+                                    </div>
+                                    <ChevronRight className="w-5 h-5 text-muted-foreground" />
+                                </motion.button>
+
+                                {/* Pause/Resume */}
+                                <motion.button
+                                    whileHover={{ scale: 1.01, backgroundColor: 'hsl(var(--muted))' }}
+                                    whileTap={{ scale: 0.99 }}
+                                    onClick={() => setConfirmAction(isPaused ? 'RESUME' : 'PAUSE')}
+                                    className="w-full p-4 rounded-xl border border-border bg-card hover:bg-muted/50 transition-all cursor-pointer flex items-center gap-4"
+                                >
+                                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${isPaused ? 'bg-emerald-500/10' : 'bg-amber-500/10'
+                                        }`}>
+                                        {isPaused
+                                            ? <Play className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+                                            : <Ban className="w-5 h-5 text-amber-600 dark:text-amber-400" />
+                                        }
+                                    </div>
+                                    <div className="flex-1 text-left">
+                                        <span className="text-sm font-semibold text-foreground block">
+                                            {isPaused ? 'Resume Strategy' : 'Pause Strategy'}
+                                        </span>
+                                        <span className="text-xs text-muted-foreground">
+                                            {isPaused ? 'Continue execution' : 'Temporarily stop execution'}
+                                        </span>
+                                    </div>
+                                    <ChevronRight className="w-5 h-5 text-muted-foreground" />
+                                </motion.button>
+
+                                {/* Skip Next (Subs Only) */}
+                                {isSubscription && !isPaused && (
+                                    <motion.button
+                                        whileHover={{ scale: 1.01, backgroundColor: 'hsl(var(--muted))' }}
+                                        whileTap={{ scale: 0.99 }}
+                                        onClick={() => setConfirmAction('SKIP')}
+                                        className="w-full p-4 rounded-xl border border-border bg-card hover:bg-muted/50 transition-all cursor-pointer flex items-center gap-4"
+                                    >
+                                        <div className="w-10 h-10 rounded-xl bg-muted flex items-center justify-center">
+                                            <ArrowRight className="w-5 h-5 text-muted-foreground" />
+                                        </div>
+                                        <div className="flex-1 text-left">
+                                            <span className="text-sm font-semibold text-foreground block">Skip Next Payment</span>
+                                            <span className="text-xs text-muted-foreground">Skip once, then resume normally</span>
+                                        </div>
+                                        <ChevronRight className="w-5 h-5 text-muted-foreground" />
+                                    </motion.button>
+                                )}
+
+                                {/* Delete */}
+                                <motion.button
+                                    whileHover={{ scale: 1.01 }}
+                                    whileTap={{ scale: 0.99 }}
+                                    onClick={() => setConfirmAction('DELETE')}
+                                    className="w-full p-4 rounded-xl border border-red-200 dark:border-red-900/50 bg-red-50/50 dark:bg-red-900/10 hover:bg-red-100/50 dark:hover:bg-red-900/20 transition-all cursor-pointer flex items-center gap-4"
+                                >
+                                    <div className="w-10 h-10 rounded-xl bg-red-100 dark:bg-red-900/30 flex items-center justify-center">
+                                        <Trash2 className="w-5 h-5 text-red-600 dark:text-red-400" />
+                                    </div>
+                                    <div className="flex-1 text-left">
+                                        <span className="text-sm font-semibold text-red-600 dark:text-red-400 block">Delete Strategy</span>
+                                        <span className="text-xs text-red-500/70 dark:text-red-400/70">Permanently remove this strategy</span>
+                                    </div>
+                                    <ChevronRight className="w-5 h-5 text-red-400" />
+                                </motion.button>
+                            </div>
+
+                            {/* Bottom Safe Area */}
+                            <div className="h-6" />
+                        </motion.div>
+                    )}
+                </AnimatePresence>
+            </motion.div>
+        </motion.div>
     )
 }
 
@@ -2515,17 +3941,20 @@ function LimitOrderSimulationModal({ isOpen, onClose, strategy, stack, onExecute
 interface StackCardProps {
     stack: StackCardData
     onExecuteDCA: (stackId: string, subCardId: string, amount: number) => Promise<boolean>
+    onExecuteSubscription: (stackId: string, subCardId: string, amount: number) => Promise<boolean>
     onRefetch?: () => void
     isExecuting?: boolean
     executingSubCardId?: string | null
     supportedTokens: TokenInfo[]
+    onManage?: (stack: StackCardData) => void
 }
 
-function StackCard({ stack, onExecuteDCA, onRefetch, isExecuting, executingSubCardId, supportedTokens }: StackCardProps) {
-    const { dca, limits, manual } = useMemo(() => {
+function StackCard({ stack, onExecuteDCA, onExecuteSubscription, onRefetch, isExecuting, executingSubCardId, supportedTokens, onManage }: StackCardProps) {
+    const { dca, limits, subscription, manual } = useMemo(() => {
         return {
             dca: stack.subCards.find(s => s.name?.includes("DCA") || s.name?.includes("Auto")),
-            limits: stack.subCards.find(s => s.name?.includes("Limit")),
+            limits: stack.subCards.find(s => s.name?.includes("Limit") || s.type === 'LIMIT_ORDER'),
+            subscription: stack.subCards.find(s => s.type === 'SUBSCRIPTION' || s.name?.includes("Auto-Pay")),
             manual: stack.subCards.find(s => s.name?.includes("Manual"))
         }
     }, [stack.subCards])
@@ -2534,25 +3963,27 @@ function StackCard({ stack, onExecuteDCA, onRefetch, isExecuting, executingSubCa
     const [showConfigModal, setShowConfigModal] = useState(false)
     const [showAddStrategyModal, setShowAddStrategyModal] = useState(false)
     const [showLimitModal, setShowLimitModal] = useState(false)
+    const [showSubscriptionModal, setShowSubscriptionModal] = useState(false)
     const [selectedStrategy, setSelectedStrategy] = useState<StackCardData['subCards'][0] | null>(null)
+    // Subscription Management Modal State
+    const [showSubscriptionManagementModal, setShowSubscriptionManagementModal] = useState(false)
+    const [managingSubscription, setManagingSubscription] = useState<StackCardData['subCards'][0] | null>(null)
     // Demo Simulation Modal State
     const [showSimulationModal, setShowSimulationModal] = useState(false)
     const [simulatingStrategy, setSimulatingStrategy] = useState<StackCardData['subCards'][0] | null>(null)
 
-    // Filter to only configured strategies (those with targetTokenSymbol set)
+    // Filter to only configured strategies
     const configuredStrategies = useMemo(() => {
-        return stack.subCards.filter(s => s.config?.targetTokenSymbol)
+        return stack.subCards.filter(s => s.config?.targetTokenSymbol || s.type === 'SUBSCRIPTION')
     }, [stack.subCards])
 
-    // Calculate DCA amount - 1 USDC/USDT per trigger for stablecoins, otherwise use budget percentage
+    // Calculate DCA amount
     const isStablecoin = ['USDC', 'USDT'].includes(stack.token.symbol.toUpperCase())
     const dcaAmount = isStablecoin ? 1 : (dca ? (stack.totalBudget * (dca.budget / 100)) : 0)
 
-    // Get Smart Account Balance for this stack's token
+    // Get Smart Account Balance
     const smartAccountBalanceHook = useBalanceBySymbol(stack.token.symbol, 'smartAccount')
     const smartAccountBalance = smartAccountBalanceHook?.balance ?? 0
-
-    // Check if we have enough for the DCA amount
     const hasInsufficientFunds = smartAccountBalance < dcaAmount
 
     const totalUsed = stack.subCards.reduce((acc, s) => acc + (s.spent || 0), 0)
@@ -2564,33 +3995,19 @@ function StackCard({ stack, onExecuteDCA, onRefetch, isExecuting, executingSubCa
         return `${num.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 4 })} ${stack.token.symbol}`
     }
 
-    // ============================================
-    // BUDGET PIE CHART DATA
-    // ============================================
+    // Pie Chart Data (unchanged logic)
     const pieData = useMemo(() => {
         const allocated = stack.subCards.reduce((sum, s) => {
             if (!s.config?.dailyLimit) return sum
             return sum + parseFloat(s.config.dailyLimit)
         }, 0)
-
         const unallocated = Math.max(0, stack.totalBudget - allocated)
-
-        const data = stack.subCards
-            .filter(s => s.config?.dailyLimit)
-            .map(s => ({
-                name: s.name,
-                value: parseFloat(s.config!.dailyLimit!),
-                color: s.color || '#8884d8'
-            }))
-
-        if (unallocated > 0) {
-            data.push({
-                name: 'Unallocated',
-                value: unallocated,
-                color: '#27272a' // zinc-800 for dark mode unallocated
-            })
-        }
-
+        const data = stack.subCards.filter(s => s.config?.dailyLimit).map(s => ({
+            name: s.name,
+            value: parseFloat(s.config!.dailyLimit!),
+            color: s.color || '#8884d8'
+        }))
+        if (unallocated > 0) data.push({ name: 'Unallocated', value: unallocated, color: '#27272a' })
         return data
     }, [stack.subCards, stack.totalBudget])
 
@@ -2606,6 +4023,14 @@ function StackCard({ stack, onExecuteDCA, onRefetch, isExecuting, executingSubCa
                         onSuccess={onRefetch}
                     />
                 )}
+                {showSubscriptionModal && (
+                    <ConfigureSubscriptionModal
+                        isOpen={showSubscriptionModal}
+                        onClose={() => setShowSubscriptionModal(false)}
+                        stack={stack}
+                        onSuccess={onRefetch}
+                    />
+                )}
                 {showSimulationModal && simulatingStrategy && (
                     <LimitOrderSimulationModal
                         isOpen={showSimulationModal}
@@ -2616,22 +4041,26 @@ function StackCard({ stack, onExecuteDCA, onRefetch, isExecuting, executingSubCa
                         strategy={simulatingStrategy}
                         stack={stack}
                         onExecute={async () => {
-                            console.log('[Simulation] Executing with strategy:', simulatingStrategy)
                             const amount = parseFloat(simulatingStrategy.config?.dailyLimit || '0')
-                            console.log('[Simulation] Amount to execute:', amount, 'Stack ID:', stack.id, 'Strategy ID:', simulatingStrategy.id)
-
-                            if (amount <= 0) {
-                                console.error('[Simulation] Invalid amount, using 1 as fallback')
-                            }
-
-                            // Execute the swap and wait for it
                             await onExecuteDCA(stack.id, simulatingStrategy.id, amount > 0 ? amount : 1)
-
-                            // Close modal after execution completes (success modal will show up)
                             setShowSimulationModal(false)
                             setSimulatingStrategy(null)
                         }}
                         isExecuting={isExecuting || false}
+                    />
+                )}
+
+                {/* Strategy Management Modal */}
+                {showSubscriptionManagementModal && managingSubscription && (
+                    <StrategyManagementModal
+                        isOpen={showSubscriptionManagementModal}
+                        onClose={() => {
+                            setShowSubscriptionManagementModal(false)
+                            setManagingSubscription(null)
+                        }}
+                        stack={stack}
+                        strategy={managingSubscription}
+                        onSuccess={onRefetch}
                     />
                 )}
             </AnimatePresence>
@@ -2642,16 +4071,16 @@ function StackCard({ stack, onExecuteDCA, onRefetch, isExecuting, executingSubCa
                 stack={stack}
                 onAddDCA={() => {
                     setShowAddStrategyModal(false)
-                    // We need to set a "new" strategy for ConfigureStrategyModal or just open it
-                    // Actually ConfigureStrategyModal handles "new" if selectedStrategy is null?
-                    // Let's check ConfigureStrategyModal logic. It takes `strategy` prop.
-                    // If we want new, we might need to pass a dummy or null.
                     setSelectedStrategy({ id: 'new', type: 'DCA_BOT' } as any)
                     setShowConfigModal(true)
                 }}
                 onAddLimit={() => {
                     setShowAddStrategyModal(false)
                     setShowLimitModal(true)
+                }}
+                onAddSubscription={() => {
+                    setShowAddStrategyModal(false)
+                    setShowSubscriptionModal(true)
                 }}
             />
 
@@ -2690,7 +4119,7 @@ function StackCard({ stack, onExecuteDCA, onRefetch, isExecuting, executingSubCa
             >
                 {/* MASTER HEADER */}
                 <div className="p-6 border-b border-border/50 bg-muted/20">
-                    <div className="flex items-center justify-between mb-6">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 sm:gap-6 mb-6">
                         <div className="flex items-center gap-4">
                             <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center relative overflow-hidden">
                                 {/* Active indicator ring */}
@@ -2709,7 +4138,7 @@ function StackCard({ stack, onExecuteDCA, onRefetch, isExecuting, executingSubCa
                             </div>
                             <div>
                                 <h3 className="text-xl font-bold text-foreground">{stack.name}</h3>
-                                <div className="flex items-center gap-2 mt-1">
+                                <div className="flex flex-wrap items-center gap-2 mt-1">
                                     <span className={`w-2 h-2 rounded-full ${stack.status === 'active' ? 'bg-emerald-500 animate-pulse' : 'bg-yellow-500'}`} />
                                     <span className="text-sm font-medium text-muted-foreground uppercase tracking-wider">{stack.status}</span>
                                     <span className="text-muted-foreground">•</span>
@@ -2719,7 +4148,7 @@ function StackCard({ stack, onExecuteDCA, onRefetch, isExecuting, executingSubCa
                         </div>
 
                         {/* Budget Pie Chart Visualization */}
-                        <div className="hidden md:flex items-center gap-4">
+                        <div className="flex items-center gap-4 w-full sm:w-auto justify-between sm:justify-start">
                             <div className="flex flex-col items-end mr-2">
                                 <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">ALLOCATION</span>
                                 <div className="flex items-center gap-2">
@@ -2763,12 +4192,30 @@ function StackCard({ stack, onExecuteDCA, onRefetch, isExecuting, executingSubCa
                                 </div>
                             </div>
                         </div>
-                        <div className="text-right">
-                            <div className="text-2xl font-bold font-mono tracking-tight">
-                                {formatTokenValue(stack.totalBudget)}
-                                <span className="text-base text-muted-foreground font-sans ml-1">/ day</span>
+                        <div className="w-full sm:w-auto flex items-center justify-between sm:justify-end gap-4">
+                            <div className="text-left sm:text-right">
+                                <div className="text-2xl font-bold font-mono tracking-tight">
+                                    {formatTokenValue(stack.totalBudget)}
+                                    <span className="text-base text-muted-foreground font-sans ml-1">
+                                        {stack.periodDuration === 3600 ? '/ hour' :
+                                            stack.periodDuration === 604800 ? '/ week' :
+                                                stack.periodDuration === 2592000 ? '/ month' :
+                                                    '/ day'}
+                                    </span>
+                                </div>
+                                <div className="text-sm text-muted-foreground">Master Budget Limit</div>
                             </div>
-                            <div className="text-sm text-muted-foreground">Master Budget Limit</div>
+                            {onManage && (
+                                <button
+                                    onClick={(e) => {
+                                        e.stopPropagation()
+                                        onManage(stack)
+                                    }}
+                                    className="p-2 rounded-xl hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
+                                >
+                                    <Settings className="w-5 h-5" />
+                                </button>
+                            )}
                         </div>
                     </div>
 
@@ -2808,72 +4255,143 @@ function StackCard({ stack, onExecuteDCA, onRefetch, isExecuting, executingSubCa
                     {configuredStrategies.length > 0 ? (
                         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
                             {configuredStrategies.map((strategy) => {
+                                // Cast config to any to avoid TS errors with Prisma Json type
+                                const config = strategy.config as any
+
                                 // Lookup target token for logo
-                                const targetTokenInfo = supportedTokens.find(t => t.symbol === strategy.config?.targetTokenSymbol)
+                                const targetTokenInfo = supportedTokens.find(t => t.symbol === config?.targetTokenSymbol)
                                 const isLimit = strategy.type === 'LIMIT_ORDER' || strategy.name.includes('Limit')
+                                const isSubscription = strategy.type === 'SUBSCRIPTION' || strategy.name.includes("Auto-Pay")
+
+                                // Robust Label Logic: Try config.label -> parsing strategy.name -> config.recipient -> 'Recipient'
+                                let displayLabel = config?.label
+                                if (!displayLabel && isSubscription) {
+                                    // Try to parse "Auto-Pay Netflix" -> "Netflix"
+                                    if (strategy.name.startsWith("Auto-Pay ")) {
+                                        displayLabel = strategy.name.replace("Auto-Pay ", "")
+                                    } else {
+                                        // Fallback to recipient address
+                                        displayLabel = config?.recipient ? `${config.recipient.slice(0, 6)}...` : 'Recipient'
+                                    }
+                                }
+                                if (!displayLabel) displayLabel = strategy.name // Absolute fallback
 
                                 // Display Logic
-                                let subText = strategy.config?.dailyLimit
-                                    ? `${strategy.config.dailyLimit} ${stack.token.symbol}/day`
+                                let subText = config?.dailyLimit
+                                    ? `${config.dailyLimit} ${stack.token.symbol}/day`
                                     : "No daily limit"
 
                                 if (isLimit) {
-                                    subText = `Target: $${strategy.config?.targetPrice}`
+                                    subText = `Target: $${config?.targetPrice}`
+                                } else if (isSubscription) {
+                                    subText = `${config?.frequency === 'WEEKLY' ? 'Weekly' : 'Monthly'} Payment`
                                 }
+
+                                const isPaused = strategy.status === 'paused'
+                                const borderColor = isLimit ? 'border-amber-500/20' : (isSubscription ? 'border-emerald-500/20' : 'border-border')
+                                const loadColor = isPaused
+                                    ? 'bg-muted text-muted-foreground'
+                                    : (isLimit ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300' : (isSubscription ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'))
+
+                                const statusDotColor = isPaused
+                                    ? 'bg-amber-500' // Paused = Amber
+                                    : (isLimit ? 'bg-amber-500 animate-pulse' : (isSubscription ? 'bg-emerald-500' : 'bg-blue-500'))
 
                                 return (
                                     <motion.div
                                         key={strategy.id}
                                         initial={{ opacity: 0, scale: 0.95 }}
-                                        animate={{ opacity: 1, scale: 1 }}
-                                        className={`p-4 rounded-xl bg-card border hover:border-primary/30 transition-colors ${isLimit ? 'border-amber-500/20' : 'border-border'}`}
+                                        animate={{ opacity: isPaused ? 0.6 : 1, scale: 1 }}
+                                        className={`p-4 rounded-xl bg-card border hover:border-primary/30 transition-all ${borderColor} ${isPaused ? 'grayscale-[0.5]' : ''}`}
                                     >
                                         {/* Strategy Header */}
                                         <div className="flex items-center justify-between mb-3">
                                             <div className="flex items-center gap-2">
-                                                <div className={`p-1.5 rounded-lg ${isLimit ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300' : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'}`}>
-                                                    {isLimit ? <BarChart3 className="w-3.5 h-3.5" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                                                <div className={`p-1.5 rounded-lg ${loadColor}`}>
+                                                    {isLimit ? <BarChart3 className="w-3.5 h-3.5" /> : (isSubscription ? <Calendar className="w-3.5 h-3.5" /> : <RefreshCw className="w-3.5 h-3.5" />)}
                                                 </div>
                                                 <div>
-                                                    <span className="text-xs font-semibold block">{isLimit ? 'Limit Order' : 'DCA Bot'}</span>
+                                                    <span className="text-xs font-semibold block flex items-center gap-1.5">
+                                                        {isLimit ? 'Limit Order' : (isSubscription ? (displayLabel) : 'DCA Bot')}
+                                                        {isPaused && (
+                                                            <span className="px-1.5 py-0.5 rounded-sm bg-amber-500/10 text-[9px] text-amber-600 font-bold uppercase tracking-wider">
+                                                                Paused
+                                                            </span>
+                                                        )}
+                                                    </span>
                                                     <span className="text-[10px] text-muted-foreground block">{subText}</span>
                                                 </div>
                                             </div>
                                             <div className="flex items-center gap-1.5">
-                                                {!isLimit && (
+                                                {/* Manage button for subscriptions and DCA */}
+                                                {(true) && (
                                                     <button
                                                         onClick={() => {
-                                                            setSelectedStrategy(strategy)
-                                                            setShowConfigModal(true)
+                                                            setManagingSubscription(strategy)
+                                                            setShowSubscriptionManagementModal(true)
                                                         }}
                                                         className="text-[10px] font-medium text-primary hover:underline cursor-pointer"
                                                     >
-                                                        Edit
+                                                        Manage
                                                     </button>
                                                 )}
-                                                <div className={`w-2 h-2 rounded-full ${isLimit ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'}`} />
+
+                                                <div className={`w-2 h-2 rounded-full ${statusDotColor}`} />
                                             </div>
                                         </div>
 
                                         {/* Strategy Config */}
-                                        <div className={`p-2.5 rounded-lg border mb-3 ${isLimit ? 'bg-amber-500/5 border-amber-500/10' : 'bg-primary/5 border-primary/10'}`}>
+                                        <div className={`p-2.5 rounded-lg border mb-3 ${isLimit ? 'bg-amber-500/5 border-amber-500/10' : (isSubscription ? 'bg-emerald-500/5 border-emerald-500/10' : 'bg-primary/5 border-primary/10')}`}>
                                             <div className="flex items-center gap-2">
                                                 <img src={stack.token.logoURI} alt={stack.token.symbol} className="w-4 h-4 rounded-full" />
                                                 <span className="text-xs font-semibold">
-                                                    {isLimit ? (strategy.config?.dailyLimit + ' ' + stack.token.symbol) : (strategy.config?.amountPerExecution + ' ' + stack.token.symbol)}
+                                                    {config?.dailyLimit || config?.amountPerExecution} {stack.token.symbol}
                                                 </span>
                                                 <ArrowRight className="w-3 h-3 text-muted-foreground" />
-                                                {targetTokenInfo?.logoURI ? (
-                                                    <img src={targetTokenInfo?.logoURI || 'https://via.placeholder.com/24'} alt={strategy.config?.targetTokenSymbol} className="w-4 h-4 rounded-full" />
-                                                ) : null}
-                                                <span className={`text-xs font-semibold ${isLimit ? 'text-amber-500' : 'text-primary'}`}>{strategy.config?.targetTokenSymbol}</span>
+                                                {isSubscription ? (
+                                                    <div className="flex items-center gap-1">
+                                                        <Wallet className="w-3 h-3 text-emerald-500" />
+                                                        <span className="text-xs font-semibold text-emerald-500">
+                                                            {displayLabel}
+                                                        </span>
+                                                    </div>
+                                                ) : (
+                                                    <>
+                                                        {targetTokenInfo?.logoURI ? (
+                                                            <img src={targetTokenInfo?.logoURI || 'https://via.placeholder.com/24'} alt={config?.targetTokenSymbol} className="w-4 h-4 rounded-full" />
+                                                        ) : null}
+                                                        <span className={`text-xs font-semibold ${isLimit ? 'text-amber-500' : 'text-primary'}`}>{config?.targetTokenSymbol}</span>
+                                                    </>
+                                                )}
                                             </div>
                                         </div>
 
+                                        {/* Next Payment Date (Subscriptions only) */}
+                                        {isSubscription && config?.nextPaymentDate && (
+                                            <div className="mb-3 p-2 rounded-lg bg-muted/30 border border-border/50">
+                                                <div className="flex items-center justify-between">
+                                                    <div className="flex items-center gap-1.5">
+                                                        <CalendarCheck className="w-3 h-3 text-emerald-500" />
+                                                        <span className="text-[10px] font-medium text-muted-foreground">Next Payment</span>
+                                                    </div>
+                                                    <span className="text-xs font-bold text-foreground">
+                                                        {(() => {
+                                                            const nextDate = new Date(config.nextPaymentDate)
+                                                            const today = new Date()
+                                                            const diffDays = Math.ceil((nextDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
+                                                            if (diffDays <= 0) return "Due Today!"
+                                                            if (diffDays === 1) return "Tomorrow"
+                                                            return nextDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+                                                        })()}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        )}
+
                                         {/* Trigger Button */}
                                         {(() => {
-                                            const dailyLimit = parseFloat(strategy.config?.dailyLimit || '0')
-                                            const amount = parseFloat(strategy.config?.amountPerExecution || strategy.config?.dailyLimit || '0')
+                                            const dailyLimit = parseFloat(config?.dailyLimit || '0')
+                                            const amount = parseFloat(config?.amountPerExecution || config?.dailyLimit || '0')
                                             const currentSpent = strategy.spent || 0
 
                                             // Limit Order Logic: Strictly enforce daily limit as the "Budget" for the buy
@@ -2886,11 +4404,17 @@ function StackCard({ stack, onExecuteDCA, onRefetch, isExecuting, executingSubCa
 
                                             const isDisabled = isThisStrategyExecuting || isLimitReached || isOverLimit
 
-                                            // Handler: Limit orders open simulation modal, DCA executes directly
+                                            // Special "Paid" state for subscriptions
+                                            const isSubscriptionPaid = isSubscription && (isLimitReached || isOverLimit)
+
+                                            // Handler - route to correct execution function based on strategy type
                                             const handleClick = () => {
                                                 if (isLimit) {
                                                     setSimulatingStrategy(strategy)
                                                     setShowSimulationModal(true)
+                                                } else if (isSubscription) {
+                                                    // Use dedicated subscription handler
+                                                    onExecuteSubscription(stack.id, strategy.id, amount)
                                                 } else {
                                                     onExecuteDCA(stack.id, strategy.id, amount)
                                                 }
@@ -2902,19 +4426,27 @@ function StackCard({ stack, onExecuteDCA, onRefetch, isExecuting, executingSubCa
                                                     whileTap={{ scale: isDisabled ? 1 : 0.98 }}
                                                     onClick={handleClick}
                                                     disabled={isDisabled}
-                                                    className={`w-full py-2 px-3 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${isDisabled && (isLimitReached || isOverLimit)
-                                                        ? 'bg-destructive/10 text-destructive'
-                                                        : (isLimit ? 'bg-amber-500 text-white hover:bg-amber-600' : 'bg-primary text-primary-foreground')
+                                                    className={`w-full py-2 px-3 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${isSubscriptionPaid
+                                                        ? 'bg-emerald-500 text-white opacity-100 disabled:opacity-100' // creative "Paid" badge
+                                                        : isDisabled && (isLimitReached || isOverLimit)
+                                                            ? 'bg-destructive/10 text-destructive'
+                                                            : (isLimit ? 'bg-amber-500 text-white hover:bg-amber-600' : (isSubscription ? 'bg-emerald-500 text-white hover:bg-emerald-600' : 'bg-primary text-primary-foreground'))
                                                         }`}
                                                 >
                                                     {isThisStrategyExecuting ? (
                                                         <Loader2 className="w-3 h-3 animate-spin" />
+                                                    ) : isSubscriptionPaid ? (
+                                                        <Check className="w-3 h-3" />
                                                     ) : (isDisabled && (isLimitReached || isOverLimit)) ? (
                                                         <Ban className="w-3 h-3" />
                                                     ) : (
-                                                        <Play className="w-3 h-3 fill-current" />
+                                                        isSubscription ? <Zap className="w-3 h-3 fill-current" /> : <Play className="w-3 h-3 fill-current" />
                                                     )}
-                                                    {isThisStrategyExecuting ? "Running..." : (isLimitReached || isOverLimit) ? "Daily Limit Reached" : (isLimit ? "Simulate Trigger" : "Trigger")}
+
+                                                    {isThisStrategyExecuting ? "Processing..."
+                                                        : isSubscriptionPaid ? `Paid: ${displayLabel}`
+                                                            : (isLimitReached || isOverLimit) ? "Limit Reached"
+                                                                : (isLimit ? "Simulate Trigger" : (isSubscription ? "Pay Now" : "Trigger"))}
                                                 </motion.button>
                                             )
                                         })()}

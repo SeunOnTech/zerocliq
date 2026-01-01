@@ -16,6 +16,7 @@ export interface TokenBalance {
     isStable?: boolean
     isBlueChip?: boolean
     isLST?: boolean
+    chainId?: number         // Optional chain ID for context
 }
 
 /**

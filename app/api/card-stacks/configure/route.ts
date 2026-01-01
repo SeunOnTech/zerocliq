@@ -33,6 +33,12 @@ export async function POST(req: NextRequest) {
         const targetPrice = config?.targetPrice
         const condition = config?.condition
         const action = config?.action
+        // Subscription-specific fields
+        const recipient = config?.recipient
+        const label = config?.label
+        const frequency = config?.frequency
+        const paymentDay = config?.paymentDay
+        const nextPaymentDate = config?.nextPaymentDate
 
         console.log("[Configure API] Updating stack configuration:", {
             stackId,
@@ -42,7 +48,9 @@ export async function POST(req: NextRequest) {
             amountPerExecution,
             dailyLimit,
             targetPrice,
-            condition
+            condition,
+            recipient,
+            label
         })
 
         if (!stackId) {
@@ -103,9 +111,20 @@ export async function POST(req: NextRequest) {
                             condition,
                             action: action || 'BUY'
                         } : {}),
+                        // Subscription specific fields
+                        ...(subCardType === 'SUBSCRIPTION' ? {
+                            recipient,
+                            label,
+                            frequency,
+                            paymentDay,
+                            nextPaymentDate,
+                            action: action || 'TRANSFER'
+                        } : {}),
                         description: subCardType === 'LIMIT_ORDER'
                             ? `Limit order: Buy ${targetTokenSymbol} at $${targetPrice}`
-                            : "Auto-buy from Add Strategy",
+                            : subCardType === 'SUBSCRIPTION'
+                                ? `Auto-pay ${label || 'subscription'} ${frequency?.toLowerCase() || 'monthly'}`
+                                : "Auto-buy from Add Strategy",
                     }
                 }
             })

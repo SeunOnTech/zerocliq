@@ -435,3 +435,33 @@ export async function notifyLimitOrderExecuted(
         }
     })
 }
+
+/**
+ * Send subscription payment notification
+ */
+export async function notifySubscriptionPaid(
+    walletAddress: string,
+    chainId: number,
+    data: {
+        label: string
+        amount: string
+        token: string
+        recipient: string
+        txHash: string
+    }
+) {
+    return createNotification({
+        walletAddress,
+        chainId,
+        type: 'DCA_EXECUTED', // Reuse type for now, could add SUBSCRIPTION_PAID later
+        title: 'Payment Sent! 💸',
+        message: `Paid ${data.amount} ${data.token} to ${data.label}`,
+        metadata: {
+            label: data.label,
+            amount: data.amount,
+            token: data.token,
+            recipient: data.recipient,
+            txHash: data.txHash,
+        }
+    })
+}
