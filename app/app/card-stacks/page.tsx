@@ -46,8 +46,8 @@ import { useAccount } from "wagmi"
 import { erc7715ProviderActions } from "@metamask/smart-accounts-kit/actions"
 import { toast } from "@/components/ui/toast"
 import { getChainById, getViemChain } from "@/lib/server/config/chains"
-import { useTokenPrice, formatUsdValue } from "@/hooks/useTokenPrice"
-import { VerifiedActivityFeed } from "@/components/features/envio/VerifiedActivityFeed"
+
+
 
 /**
  * CLEAN TEST PAGE FOR CARD STACKS
@@ -417,8 +417,7 @@ export default function CardStacksTestPage() {
                 </div>
             )}
 
-            {/* Verified Activity Feed (Envio) */}
-            <VerifiedActivityFeed />
+            {/* Verified Activity Feed (Global now) */}
 
             {/* Stacks */}
             {!isLoading && stacks.length > 0 && (

@@ -9,6 +9,7 @@ import { BalanceSync } from "@/components/BalanceSync";
 import { PriceSync } from "@/components/PriceSync";
 import { TradeCardSync } from "@/components/TradeCardSync";
 import { ToastContainer } from "@/components/ui/toast";
+import { GlobalCommandBar } from "@/components/features/envio/GlobalCommandBar";
 import localFont from "next/font/local"
 
 const inter = Inter({ subsets: ["latin"] });
@@ -66,6 +67,7 @@ export default function RootLayout({
             <PriceSync />
             <TradeCardSync />
             {children}
+            <GlobalCommandBar />
             <ToastContainer />
           </AppKitProvider>
         </ThemeProvider>
