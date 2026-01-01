@@ -148,9 +148,18 @@ class DCAService {
                 const dailyLimitBase = parseFloat(config.dailyLimit)
                 // Convert to Wei
                 const dailyLimitWei = BigInt(Math.round(dailyLimitBase * Math.pow(10, cardStack.tokenDecimals)))
-                const currentSpent = BigInt(dcaSubCardForLimit.currentSpent || "0")
 
-                console.log(`[DCA Limit Check] Limit: ${dailyLimitWei}, Spent: ${currentSpent}, Request: ${transferAmount}`)
+                // Check if we need to reset daily limit
+                const lastSpentDate = new Date(dcaSubCardForLimit.lastSpentDate)
+                const today = new Date()
+                const isSameDay = lastSpentDate.getDate() === today.getDate() &&
+                    lastSpentDate.getMonth() === today.getMonth() &&
+                    lastSpentDate.getFullYear() === today.getFullYear()
+
+                // If not same day, reset currentSpent to 0 for this check
+                const currentSpent = isSameDay ? BigInt(dcaSubCardForLimit.currentSpent || "0") : BigInt(0)
+
+                console.log(`[DCA Limit Check] Limit: ${dailyLimitWei}, Spent Today: ${currentSpent}, Request: ${transferAmount}, Reset: ${!isSameDay}`)
 
                 if (currentSpent + transferAmount > dailyLimitWei) {
                     throw new Error(`Daily limit exceeded. Limit: ${config.dailyLimit} ${cardStack.tokenSymbol}, Spent Today: ${formatUnits(currentSpent, cardStack.tokenDecimals)}`)
@@ -211,7 +220,14 @@ class DCAService {
             let updatedSubCardSpent = "0"
 
             if (subCardToUpdate) {
-                const currentSpent = BigInt(subCardToUpdate.currentSpent || "0")
+                // Re-calculate spent based on daily reset (same logic as above)
+                const lastSpentDate = new Date(subCardToUpdate.lastSpentDate)
+                const today = new Date()
+                const isSameDay = lastSpentDate.getDate() === today.getDate() &&
+                    lastSpentDate.getMonth() === today.getMonth() &&
+                    lastSpentDate.getFullYear() === today.getFullYear()
+
+                const currentSpent = isSameDay ? BigInt(subCardToUpdate.currentSpent || "0") : BigInt(0)
                 const newSpent = currentSpent + transferAmount
 
                 // Update SubCard
@@ -219,11 +235,12 @@ class DCAService {
                     where: { id: subCardToUpdate.id },
                     data: {
                         currentSpent: newSpent.toString(),
-                        totalSpent: (BigInt(subCardToUpdate.totalSpent || "0") + transferAmount).toString()
+                        totalSpent: (BigInt(subCardToUpdate.totalSpent || "0") + transferAmount).toString(),
+                        lastSpentDate: new Date() // Always update timestamp to now
                     }
                 })
                 updatedSubCardSpent = newSpent.toString()
-                console.log(`[DCA Transfer] Updated SubCard ${subCardToUpdate.id} spent: ${newSpent}`)
+                console.log(`[DCA Transfer] Updated SubCard ${subCardToUpdate.id} spent: ${newSpent} (Reset: ${!isSameDay})`)
             } else {
                 console.warn(`[DCA Transfer] No SubCard found to update spent amount for stack ${cardStackId}`)
             }

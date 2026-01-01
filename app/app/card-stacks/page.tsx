@@ -47,6 +47,7 @@ import { erc7715ProviderActions } from "@metamask/smart-accounts-kit/actions"
 import { toast } from "@/components/ui/toast"
 import { getChainById, getViemChain } from "@/lib/server/config/chains"
 import { useTokenPrice, formatUsdValue } from "@/hooks/useTokenPrice"
+import { VerifiedActivityFeed } from "@/components/features/envio/VerifiedActivityFeed"
 
 /**
  * CLEAN TEST PAGE FOR CARD STACKS
@@ -142,6 +143,7 @@ export default function CardStacksTestPage() {
     const [stacks, setStacks] = useState<StackCardData[]>([])
     const [showCreateFlow, setShowCreateFlow] = useState(false)
     const [executingStackId, setExecutingStackId] = useState<string | null>(null)
+    const [executingSubCardId, setExecutingSubCardId] = useState<string | null>(null)
 
     // DCA Configuration State
     // Success Modal State
@@ -156,6 +158,7 @@ export default function CardStacksTestPage() {
         amountOut?: string
         rate?: string
         swapTxHash?: string
+        isLimitOrder?: boolean
     } | null>(null)
 
     // Refetch stacks from API
@@ -172,23 +175,28 @@ export default function CardStacksTestPage() {
         }
     }, [address, currentChainId])
 
-    const handleExecuteDCA = useCallback(async (stackId: string, subCardId: string, amount: number) => {
+    const handleExecuteDCA = useCallback(async (stackId: string, subCardId: string, amount: number): Promise<boolean> => {
         setExecutingStackId(stackId)
+        setExecutingSubCardId(subCardId)
         try {
             const stack = stacks.find(s => s.id === stackId)
+            const subCard = stack?.subCards.find(s => s.id === subCardId)
+            const isLimitOrder = subCard?.type === 'LIMIT_ORDER'
+
             const res = await fetch('/api/card-stacks/execute-dca', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     cardStackId: stackId,
                     subCardId,
-                    amount: amount.toFixed(stack?.token.decimals || 6)
+                    amount: amount.toFixed(stack?.token.decimals || 6),
+                    isLimitOrder // Pass to API for activity tracking
                 })
             })
             const data = await res.json()
             if (data.success) {
                 // Show success modal
-                const targetSymbol = data.targetToken || stack?.subCards.find(s => s.id === subCardId)?.config?.targetTokenSymbol
+                const targetSymbol = data.targetToken || subCard?.config?.targetTokenSymbol
                 const targetTokenInfo = supportedTokens.find(t => t.symbol === targetSymbol)
 
                 setSuccessModal({
@@ -201,20 +209,25 @@ export default function CardStacksTestPage() {
                     targetToken: targetSymbol,
                     targetTokenLogo: targetTokenInfo?.logoURI,
                     amountOut: data.amountOut ? (Number(data.amountOut) / Math.pow(10, 18)).toFixed(6) : undefined,
-                    rate: data.rate
+                    rate: data.rate,
+                    isLimitOrder
                 })
 
                 // Refetch stacks to get updated spent amounts from DB
                 await refetchStacks()
+                return true
             } else {
                 console.error("Execution failed", data.error)
-                toast.error("Execution Failed", data.details?.message || data.error || "Unknown error")
+                toast.error(isLimitOrder ? "Limit Order Failed" : "Execution Failed", data.details?.message || data.error || "Unknown error")
+                return false
             }
         } catch (e: any) {
             console.error("Execution error", e)
             toast.error("Execution Failed", e.message || "Network error")
+            return false
         } finally {
             setExecutingStackId(null)
+            setExecutingSubCardId(null)
         }
     }, [currentChainId, address, stacks, refetchStacks, supportedTokens])
 
@@ -404,6 +417,9 @@ export default function CardStacksTestPage() {
                 </div>
             )}
 
+            {/* Verified Activity Feed (Envio) */}
+            <VerifiedActivityFeed />
+
             {/* Stacks */}
             {!isLoading && stacks.length > 0 && (
                 <div className="space-y-4">
@@ -414,6 +430,7 @@ export default function CardStacksTestPage() {
                             onExecuteDCA={handleExecuteDCA}
                             onRefetch={refetchStacks}
                             isExecuting={executingStackId === stack.id}
+                            executingSubCardId={executingSubCardId}
                             supportedTokens={supportedTokens}
                         />
                     ))}
@@ -483,7 +500,7 @@ export default function CardStacksTestPage() {
                                     transition={{ delay: 0.3 }}
                                     className="text-xl font-bold text-foreground"
                                 >
-                                    Transfer Successful!
+                                    {successModal.isLimitOrder ? 'Limit Order Filled!' : 'Transfer Successful!'}
                                 </motion.h3>
                                 <motion.p
                                     initial={{ opacity: 0 }}
@@ -491,7 +508,9 @@ export default function CardStacksTestPage() {
                                     transition={{ delay: 0.4 }}
                                     className="text-sm text-muted-foreground mt-1"
                                 >
-                                    Your DCA trade has been executed
+                                    {successModal.isLimitOrder
+                                        ? 'Your limit order has been triggered and executed'
+                                        : 'Your DCA trade has been executed'}
                                 </motion.p>
                             </div>
 
@@ -2496,13 +2515,14 @@ function LimitOrderSimulationModal({ isOpen, onClose, strategy, stack, onExecute
 
 interface StackCardProps {
     stack: StackCardData
-    onExecuteDCA: (stackId: string, subCardId: string, amount: number) => void
+    onExecuteDCA: (stackId: string, subCardId: string, amount: number) => Promise<boolean>
     onRefetch?: () => void
     isExecuting?: boolean
+    executingSubCardId?: string | null
     supportedTokens: TokenInfo[]
 }
 
-function StackCard({ stack, onExecuteDCA, onRefetch, isExecuting, supportedTokens }: StackCardProps) {
+function StackCard({ stack, onExecuteDCA, onRefetch, isExecuting, executingSubCardId, supportedTokens }: StackCardProps) {
     const { dca, limits, manual } = useMemo(() => {
         return {
             dca: stack.subCards.find(s => s.name?.includes("DCA") || s.name?.includes("Auto")),
@@ -2596,7 +2616,7 @@ function StackCard({ stack, onExecuteDCA, onRefetch, isExecuting, supportedToken
                         }}
                         strategy={simulatingStrategy}
                         stack={stack}
-                        onExecute={() => {
+                        onExecute={async () => {
                             console.log('[Simulation] Executing with strategy:', simulatingStrategy)
                             const amount = parseFloat(simulatingStrategy.config?.dailyLimit || '0')
                             console.log('[Simulation] Amount to execute:', amount, 'Stack ID:', stack.id, 'Strategy ID:', simulatingStrategy.id)
@@ -2605,10 +2625,10 @@ function StackCard({ stack, onExecuteDCA, onRefetch, isExecuting, supportedToken
                                 console.error('[Simulation] Invalid amount, using 1 as fallback')
                             }
 
-                            // Execute the swap
-                            onExecuteDCA(stack.id, simulatingStrategy.id, amount > 0 ? amount : 1)
+                            // Execute the swap and wait for it
+                            await onExecuteDCA(stack.id, simulatingStrategy.id, amount > 0 ? amount : 1)
 
-                            // Close modal after initiating execution
+                            // Close modal after execution completes (success modal will show up)
                             setShowSimulationModal(false)
                             setSimulatingStrategy(null)
                         }}
@@ -2862,7 +2882,10 @@ function StackCard({ stack, onExecuteDCA, onRefetch, isExecuting, supportedToken
                                             const isLimitReached = dailyLimit > 0 && (currentSpent + (isLimit ? 0.000001 : amount) > dailyLimit)
                                             const isOverLimit = dailyLimit > 0 && currentSpent >= dailyLimit
 
-                                            const isDisabled = isExecuting || isLimitReached || isOverLimit
+                                            // Only show executing state for THIS specific strategy
+                                            const isThisStrategyExecuting = executingSubCardId === strategy.id
+
+                                            const isDisabled = isThisStrategyExecuting || isLimitReached || isOverLimit
 
                                             // Handler: Limit orders open simulation modal, DCA executes directly
                                             const handleClick = () => {
@@ -2885,14 +2908,14 @@ function StackCard({ stack, onExecuteDCA, onRefetch, isExecuting, supportedToken
                                                         : (isLimit ? 'bg-amber-500 text-white hover:bg-amber-600' : 'bg-primary text-primary-foreground')
                                                         }`}
                                                 >
-                                                    {isExecuting ? (
+                                                    {isThisStrategyExecuting ? (
                                                         <Loader2 className="w-3 h-3 animate-spin" />
                                                     ) : (isDisabled && (isLimitReached || isOverLimit)) ? (
                                                         <Ban className="w-3 h-3" />
                                                     ) : (
                                                         <Play className="w-3 h-3 fill-current" />
                                                     )}
-                                                    {isExecuting ? "Running..." : (isLimitReached || isOverLimit) ? "Daily Limit Reached" : (isLimit ? "Simulate Trigger" : "Trigger")}
+                                                    {isThisStrategyExecuting ? "Running..." : (isLimitReached || isOverLimit) ? "Daily Limit Reached" : (isLimit ? "Simulate Trigger" : "Trigger")}
                                                 </motion.button>
                                             )
                                         })()}
@@ -2922,7 +2945,7 @@ function StackCard({ stack, onExecuteDCA, onRefetch, isExecuting, supportedToken
                         Add Strategy
                     </motion.button>
                 </div>
-            </motion.div>
+            </motion.div >
         </>
     )
 }

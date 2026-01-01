@@ -460,3 +460,40 @@ export async function logLimitOrderCreateActivity(
     })
 }
 
+/**
+ * Log limit order execution activity
+ */
+export async function logLimitOrderExecuteActivity(
+    walletAddress: string,
+    chainId: number,
+    data: {
+        status: ActivityStatus
+        targetToken: string
+        amountIn: string
+        amountOut: string
+        sourceToken: string
+        txHash?: string
+        error?: string
+    }
+) {
+    return logActivity({
+        walletAddress,
+        chainId,
+        type: 'LIMIT_ORDER_EXECUTE',
+        status: data.status,
+        title: data.status === 'SUCCESS' ? 'Limit Order Executed' : data.status === 'PENDING' ? 'Executing Limit Order' : 'Limit Order Failed',
+        description: data.status === 'SUCCESS'
+            ? `Bought ${data.amountOut} ${data.targetToken} with ${data.amountIn} ${data.sourceToken}`
+            : data.status === 'PENDING'
+                ? `Executing limit order for ${data.targetToken}...`
+                : `Limit order failed: ${data.error}`,
+        txHash: data.txHash,
+        metadata: {
+            targetToken: data.targetToken,
+            amountIn: data.amountIn,
+            amountOut: data.amountOut,
+            sourceToken: data.sourceToken,
+            error: data.error,
+        }
+    })
+}

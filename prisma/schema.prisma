@@ -158,6 +158,7 @@ model SubCard {
   currentSpent      String      @default("0")
   totalSpent        String      @default("0")
   config            Json        @default("{}")
+  lastSpentDate     DateTime    @default(now())
   status            StackStatus @default(ACTIVE)
   createdAt         DateTime    @default(now())
   stack             CardStack   @relation(fields: [stackId], references: [id], onDelete: Cascade)
@@ -187,6 +188,7 @@ enum NotificationType {
   DCA_EXECUTED
   DCA_FAILED
   LIMIT_ORDER_CREATED
+  LIMIT_ORDER_EXECUTED
   PERMISSION_EXPIRING
   PERMISSION_EXPIRED
   SYSTEM_INFO
@@ -229,6 +231,7 @@ enum ActivityType {
   CARD_STACK_RESUME
   DCA_EXECUTION
   LIMIT_ORDER_CREATE
+  LIMIT_ORDER_EXECUTE
   APPROVAL
   BRIDGE
 }

@@ -20,7 +20,7 @@ export const env = {
     BSC_RPC_URL: process.env.BSC_RPC_URL,
     ARBITRUM_RPC_URL: process.env.ARBITRUM_RPC_URL,
     OPTIMISM_RPC_URL: process.env.OPTIMISM_RPC_URL,
-    SEPOLIA_RPC_URL: process.env.SEPOLIA_RPC_URL || "https://rpc.sepolia.org",
+    SEPOLIA_RPC_URL: process.env.SEPOLIA_RPC_URL!,
     MONAD_RPC_URL: process.env.MONAD_RPC_URL,
 
     // Pimlico

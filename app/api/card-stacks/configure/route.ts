@@ -60,8 +60,8 @@ export async function POST(req: NextRequest) {
             },
         })
 
-        // If subCardId is provided, update the subCard's config
-        if (subCardId) {
+        // If subCardId is provided and NOT "new", update the subCard's config
+        if (subCardId && subCardId !== 'new') {
             await prisma.subCard.update({
                 where: { id: subCardId },
                 data: {

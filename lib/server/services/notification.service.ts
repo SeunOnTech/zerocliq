@@ -406,3 +406,32 @@ export async function notifyLimitOrderCreated(
     })
 }
 
+/**
+ * Send limit order executed notification
+ */
+export async function notifyLimitOrderExecuted(
+    walletAddress: string,
+    chainId: number,
+    data: {
+        targetToken: string
+        amountIn: string
+        amountOut: string
+        sourceToken: string
+        txHash: string
+    }
+) {
+    return createNotification({
+        walletAddress,
+        chainId,
+        type: 'LIMIT_ORDER_EXECUTED',
+        title: 'Limit Order Filled!',
+        message: `Bought ${data.amountOut} ${data.targetToken} with ${data.amountIn} ${data.sourceToken}`,
+        metadata: {
+            targetToken: data.targetToken,
+            amountIn: data.amountIn,
+            amountOut: data.amountOut,
+            sourceToken: data.sourceToken,
+            txHash: data.txHash,
+        }
+    })
+}
