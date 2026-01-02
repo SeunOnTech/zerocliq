@@ -282,9 +282,9 @@ export function AiChatOverlay({ isOpen, onClose }: AiChatOverlayProps) {
                             <motion.div
                                 initial={{ scale: 0 }}
                                 animate={{ scale: 1 }}
-                                className="w-12 h-12 bg-background text-foreground border border-border/50 rounded-xl mx-auto flex items-center justify-center mb-3"
+                                className="w-12 h-12 bg-background text-foreground border border-border/50 rounded-xl mx-auto flex items-center justify-center mb-3 overflow-hidden"
                             >
-                                <ZeroSlipLogo className="w-6 h-6 animate-pulse" />
+                                <img src="/icon.png" alt="Logo" className="w-full h-full object-cover" />
                             </motion.div>
                             <motion.h2
                                 initial={{ opacity: 0, y: 10 }}
@@ -309,8 +309,8 @@ export function AiChatOverlay({ isOpen, onClose }: AiChatOverlayProps) {
                                 >
                                     {/* Avatar - Only for assistant */}
                                     {msg.role === "assistant" && (
-                                        <div className="w-8 h-8 rounded-full bg-background border border-border flex items-center justify-center shrink-0 self-end mb-1">
-                                            <ZeroSlipLogo className="w-4 h-4" />
+                                        <div className="w-8 h-8 rounded-full bg-background border border-border flex items-center justify-center shrink-0 self-end mb-1 overflow-hidden">
+                                            <img src="/icon.png" alt="AI Agent" className="w-full h-full object-cover" />
                                         </div>
                                     )}
 
@@ -344,8 +344,8 @@ export function AiChatOverlay({ isOpen, onClose }: AiChatOverlayProps) {
                                     animate={{ opacity: 1 }}
                                     className="flex gap-3 mr-auto max-w-[90%]"
                                 >
-                                    <div className="w-7 h-7 rounded-lg bg-background text-foreground border border-border/50 flex items-center justify-center shrink-0">
-                                        <ZeroSlipLogo className="w-3.5 h-3.5" />
+                                    <div className="w-7 h-7 rounded-lg bg-background text-foreground border border-border/50 flex items-center justify-center shrink-0 overflow-hidden">
+                                        <img src="/icon.png" alt="AI" className="w-full h-full object-cover" />
                                     </div>
                                     <div className="flex gap-1 items-center p-3.5 bg-muted/30 border border-border/50 rounded-2xl h-[52px]">
                                         <div className="w-1.5 h-1.5 bg-foreground/40 rounded-full animate-bounce [animation-delay:-0.3s]" />
