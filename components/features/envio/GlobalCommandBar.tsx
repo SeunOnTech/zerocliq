@@ -4,6 +4,8 @@ import { useEffect, useState, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Activity, ChevronUp, ChevronDown, Zap, FileJson, TrendingUp } from 'lucide-react'
 import { VerifiedActivityFeed } from './VerifiedActivityFeed'
+import { PaymasterLeaderboard } from './PaymasterLeaderboard'
+import { HourlyVolumeChart } from './HourlyVolumeChart'
 
 type Stats = {
     totalGasUsed: string
@@ -152,6 +154,8 @@ export function GlobalCommandBar() {
     }, [isPulsing])
 
 
+    const [activeTab, setActiveTab] = useState<'FEED' | 'LEADERBOARD' | 'VOLUME'>('FEED')
+
     return (
         <>
             {/* Spacer to prevent content overlap at bottom */}
@@ -237,7 +241,7 @@ export function GlobalCommandBar() {
                             >
                                 <div className="p-6">
                                     {/* HUD Stats Row */}
-                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
                                         {/* Aggregation Card */}
                                         <div className="p-4 border border-border bg-muted/30 rounded-lg">
                                             <div className="flex items-center gap-2 mb-2 text-muted-foreground">
@@ -252,21 +256,21 @@ export function GlobalCommandBar() {
                                             </div>
                                         </div>
 
-                                        {/* Savings Card (Shadow Fork Logic) */}
+                                        {/* Savings Card */}
                                         <div className="p-4 border border-border bg-muted/30 rounded-lg">
                                             <div className="flex items-center gap-2 mb-2 text-muted-foreground">
                                                 <TrendingUp className="w-4 h-4 text-blue-500" />
-                                                <span className="text-xs font-mono uppercase">Est. User Savings</span>
+                                                <span className="text-xs font-mono uppercase">User Savings</span>
                                             </div>
                                             <div className="text-2xl font-mono text-blue-600 dark:text-blue-400">
                                                 ~{stats.savingsPercent}%
                                             </div>
                                             <div className="text-[10px] text-muted-foreground mt-1">
-                                                vs Standard EOA Transfers
+                                                vs EOA Transfers
                                             </div>
                                         </div>
 
-                                        {/* Raw Stream Card */}
+                                        {/* Status Card */}
                                         <div className="p-4 border border-border bg-muted/30 rounded-lg">
                                             <div className="flex items-center gap-2 mb-2 text-muted-foreground">
                                                 <FileJson className="w-4 h-4 text-purple-500" />
@@ -274,37 +278,77 @@ export function GlobalCommandBar() {
                                             </div>
                                             <div className="text-xs font-mono text-muted-foreground space-y-1">
                                                 <div className="flex justify-between">
-                                                    <span>SYNC_Height:</span>
+                                                    <span>SYNC:</span>
                                                     <span className="text-foreground">Live</span>
                                                 </div>
                                                 <div className="flex justify-between">
                                                     <span>LATENCY:</span>
-                                                    <span className="text-green-600 dark:text-green-500">12ms</span>
+                                                    <span className="text-emerald-600 dark:text-emerald-500">12ms</span>
                                                 </div>
                                             </div>
                                         </div>
                                     </div>
 
-                                    {/* The Feed */}
-                                    <div className="border border-border rounded-lg overflow-hidden bg-muted/10">
-                                        <div className="p-2 bg-muted/50 border-b border-border flex items-center justify-between">
-                                            <span className="text-xs font-mono text-muted-foreground">LIVE_EVENT_FEED</span>
-                                            <div className="flex gap-1">
-                                                <div className="w-2 h-2 rounded-full bg-red-500" />
-                                                <div className="w-2 h-2 rounded-full bg-yellow-500" />
-                                                <div className="w-2 h-2 rounded-full bg-green-500" />
-                                            </div>
-                                        </div>
-                                        <div className="p-2">
-                                            <VerifiedActivityFeed />
-                                        </div>
+                                    {/* NAVIGATION TABS */}
+                                    <div className="flex items-center gap-2 mb-4 bg-muted/20 p-1 rounded-lg w-fit">
+                                        {(['FEED', 'LEADERBOARD', 'VOLUME'] as const).map((tab) => (
+                                            <button
+                                                key={tab}
+                                                onClick={() => setActiveTab(tab)}
+                                                className={`px-3 py-1.5 rounded-md text-[10px] font-bold uppercase transition-all ${activeTab === tab
+                                                    ? 'bg-foreground text-background shadow-sm'
+                                                    : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                                                    }`}
+                                            >
+                                                {tab}
+                                            </button>
+                                        ))}
+                                    </div>
+
+                                    {/* DYNAMIC CONTENT AREA */}
+                                    <div className="border border-border rounded-lg overflow-hidden bg-muted/10 min-h-[300px]">
+                                        <AnimatePresence mode='wait'>
+                                            {activeTab === 'FEED' && (
+                                                <motion.div
+                                                    key="feed"
+                                                    initial={{ opacity: 0, x: -10 }}
+                                                    animate={{ opacity: 1, x: 0 }}
+                                                    exit={{ opacity: 0, x: 10 }}
+                                                    className="p-4"
+                                                >
+                                                    <VerifiedActivityFeed />
+                                                </motion.div>
+                                            )}
+                                            {activeTab === 'LEADERBOARD' && (
+                                                <motion.div
+                                                    key="leaderboard"
+                                                    initial={{ opacity: 0, x: -10 }}
+                                                    animate={{ opacity: 1, x: 0 }}
+                                                    exit={{ opacity: 0, x: 10 }}
+                                                    className="p-4"
+                                                >
+                                                    <PaymasterLeaderboard />
+                                                </motion.div>
+                                            )}
+                                            {activeTab === 'VOLUME' && (
+                                                <motion.div
+                                                    key="volume"
+                                                    initial={{ opacity: 0, x: -10 }}
+                                                    animate={{ opacity: 1, x: 0 }}
+                                                    exit={{ opacity: 0, x: 10 }}
+                                                    className="p-4 h-[300px]"
+                                                >
+                                                    <HourlyVolumeChart />
+                                                </motion.div>
+                                            )}
+                                        </AnimatePresence>
                                     </div>
                                 </div>
                             </motion.div>
                         )}
                     </AnimatePresence>
-                </motion.div>
-            </motion.div>
+                </motion.div >
+            </motion.div >
         </>
     )
 }
