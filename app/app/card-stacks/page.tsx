@@ -115,6 +115,10 @@ interface StackCardData {
             targetPrice?: string
             condition?: 'BELOW' | 'ABOVE'
             action?: string
+            // Trailing Stop specific
+            trailPercent?: number
+            activationPrice?: string
+            peakPrice?: string
         }
     }>
     recentTx: Array<{
@@ -241,10 +245,41 @@ export default function CardStacksTestPage() {
             toast.error("Execution Failed", e.message || "Network error")
             return false
         } finally {
-            setExecutingStackId(null)
             setExecutingSubCardId(null)
         }
     }, [stacks, supportedTokens, refetchStacks])
+
+    const handleExecuteTrailingStop = useCallback(async (stackId: string, subCardId: string, amount: number) => {
+        setExecutingStackId(stackId)
+        setExecutingSubCardId(subCardId)
+        try {
+            const res = await fetch('/api/card-stacks/execute-trailing', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    cardStackId: stackId,
+                    subCardId,
+                    amount
+                })
+            })
+            const data = await res.json()
+            if (data.success) {
+                toast.success("Trailing Stop Executed", "Successfully sold tokens to protected stable.")
+                await refetchStacks()
+                return true
+            } else {
+                toast.error("Execution Failed", data.error || "Unknown error")
+                return false
+            }
+        } catch (e) {
+            console.error(e)
+            toast.error("Network Error")
+            return false
+        } finally {
+            setExecutingStackId(null)
+            setExecutingSubCardId(null)
+        }
+    }, [refetchStacks])
 
     // Dedicated handler for Subscription payments - calls new endpoint
     const handleExecuteSubscription = useCallback(async (stackId: string, subCardId: string, amount: number): Promise<boolean> => {
@@ -354,6 +389,14 @@ export default function CardStacksTestPage() {
                     paymentDay: sc.config?.paymentDay,
                     nextPaymentDate: sc.config?.nextPaymentDate,
                     action: sc.config?.action || 'TRANSFER'
+                } : {}),
+                // Trailing Stop specific (CRITICAL: Must include allocationAmount)
+                ...(sc.type === 'TRAILING_STOP' ? {
+                    trailPercent: sc.config?.trailPercent,
+                    activationPrice: sc.config?.activationPrice,
+                    peakPrice: sc.config?.peakPrice,
+                    allocationAmount: sc.config?.allocationAmount, // Pass explicit amount
+                    action: 'SELL'
                 } : {})
             }
         }))
@@ -512,6 +555,7 @@ export default function CardStacksTestPage() {
                             stack={stack}
                             onExecuteDCA={handleExecuteDCA}
                             onExecuteSubscription={handleExecuteSubscription}
+                            onExecuteTrailingStop={handleExecuteTrailingStop}
                             onRefetch={refetchStacks}
                             isExecuting={executingStackId === stack.id}
                             executingSubCardId={executingSubCardId}
@@ -1412,10 +1456,14 @@ interface AddStrategyModalProps {
     onAddDCA: () => void
     onAddLimit: () => void
     onAddSubscription: () => void
+    onAddTrailingStop: () => void
 }
 
-function AddStrategyModal({ isOpen, onClose, stack, onAddDCA, onAddLimit, onAddSubscription }: AddStrategyModalProps) {
+function AddStrategyModal({ isOpen, onClose, stack, onAddDCA, onAddLimit, onAddSubscription, onAddTrailingStop }: AddStrategyModalProps) {
     const [searchQuery, setSearchQuery] = useState('')
+
+    // Check if stablecoin (Trailing Stop is useless for stablecoins)
+    const isStable = ['USDC', 'USDT', 'DAI', 'USDC.E'].includes(stack.token.symbol.toUpperCase())
 
     if (!isOpen) return null
 
@@ -1453,11 +1501,11 @@ function AddStrategyModal({ isOpen, onClose, stack, onAddDCA, onAddLimit, onAddS
         {
             id: 'trailing',
             name: 'Trailing Stop',
-            description: 'Sell if price drops by a percentage',
-            icon: TrendingUp,
-            color: 'green',
-            available: false,
-            action: () => { },
+            description: isStable ? 'Unavailable for Stablecoins' : 'Sell if price drops by a percentage',
+            icon: TrendingDown,
+            color: 'rose',
+            available: !isStable, // Only for volatile assets
+            action: onAddTrailingStop,
             tags: ['sell', 'protect', 'exit']
         },
         {
@@ -1965,10 +2013,10 @@ function ConfigureSubscriptionModal({ isOpen, onClose, stack, onSuccess }: Confi
 
     // Form State
     const [recipient, setRecipient] = useState("")
-    const [label, setLabel] = useState("") // e.g. Netflix
+    const [label, setLabel] = useState("")
     const [amount, setAmount] = useState("")
     const [frequency, setFrequency] = useState<'WEEKLY' | 'MONTHLY'>('MONTHLY')
-    const [paymentDay, setPaymentDay] = useState<number>(1) // 1st, 15th, or last day (31)
+    const [paymentDay, setPaymentDay] = useState<number>(1)
 
     // Derived
     const maxAllowedDaily = stack.totalBudget
@@ -2360,6 +2408,533 @@ interface StackManagementModalProps {
     onSuccess: () => void
 }
 
+interface ConfigureTrailingStopModalProps {
+    isOpen: boolean
+    onClose: () => void
+    stack: StackCardData
+    onSuccess?: () => void
+}
+
+function ConfigureTrailingStopModal({ isOpen, onClose, stack, onSuccess }: ConfigureTrailingStopModalProps) {
+    const [step, setStep] = useState<'CONFIG' | 'REVIEW'>('CONFIG')
+    const [trailPercent, setTrailPercent] = useState(10)
+    const [allocationAmount, setAllocationAmount] = useState<number>(0)
+    const [allocationPercent, setAllocationPercent] = useState(100) // Keep for backward compat / calculations
+    const [isSaving, setIsSaving] = useState(false)
+
+    // Mock Price for Visualization
+    const currentPrice = useMemo(() => {
+        const s = stack.token.symbol.toUpperCase()
+        if (s.includes('BTC')) return 65000.00
+        if (s.includes('ETH')) return 2450.00
+        if (s.includes('SOL')) return 145.00
+        if (s.includes('LINK')) return 15.00
+        return 100.00
+    }, [stack.token.symbol])
+    const stopPrice = currentPrice * (1 - trailPercent / 100)
+
+    // Calculate Available Budget
+    const { usedBudget, availableBudget, maxPercent } = useMemo(() => {
+        const used = stack.subCards.reduce((acc, sub) => {
+            const cfg = sub.config as any
+            const val = (v: any) => parseFloat(v || '0')
+
+            // Trailing Stop: Allocation % is mapped to 'budget' in transformApiStack
+            if (sub.type === 'TRAILING_STOP') {
+                const percent = sub.budget || 0
+                return acc + (percent / 100 * stack.totalBudget)
+            }
+
+            // DCA / Limit / Subscription: Use explicit config amounts
+            // Prioritize dailyLimit as it represents the reserved capacity
+            if (cfg?.dailyLimit) return acc + val(cfg.dailyLimit)
+            if (cfg?.amountPerExecution) return acc + val(cfg.amountPerExecution)
+            if (cfg?.totalBudget) return acc + val(cfg.totalBudget)
+            if (cfg?.amount) return acc + val(cfg.amount)
+
+            return acc
+        }, 0)
+
+        const avail = Math.max(0, stack.totalBudget - used)
+        const maxP = Math.floor((avail / stack.totalBudget) * 100)
+
+        return { usedBudget: used, availableBudget: avail, maxPercent: maxP }
+    }, [stack])
+
+    // Clamp initial allocation and sync state
+    useEffect(() => {
+        // Set initial amount based on max percent if not set yet
+        if (allocationAmount === 0 && maxPercent > 0) {
+            const initialAmount = (maxPercent / 100) * stack.totalBudget
+            setAllocationAmount(parseFloat(initialAmount.toFixed(4)))
+        }
+    }, [maxPercent, stack.totalBudget])
+
+    // Sync percent when amount changes
+    useEffect(() => {
+        const percent = (allocationAmount / stack.totalBudget) * 100
+        setAllocationPercent(Math.min(100, parseFloat(percent.toFixed(2))))
+    }, [allocationAmount, stack.totalBudget])
+
+    const handleSave = async () => {
+        setIsSaving(true)
+        try {
+            // Find Stablecoin for Target (USDC preferred)
+            const currentChain = useAppStore.getState().availableChains.find(c => c.id === stack.token.chainId)
+            const stableToken = currentChain?.tokens.find(t => ['USDC', 'USDT', 'DAI', 'USDC.E'].includes(t.symbol.toUpperCase()))
+
+            // Fallback to USDT/DAI if USDC not found, or warn? 
+            // For now, if no stable found, we might fail or user has to rely on generic routing.
+            // But generally there's always a stable.
+            const targetAddress = stableToken?.address || stack.token.address // Fallback (though will fail swap if same)
+            const targetSymbol = stableToken?.symbol || stack.token.symbol
+            const targetDecimals = stableToken?.decimals || stack.token.decimals
+
+            const res = await fetch('/api/card-stacks/configure', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    cardStackId: stack.id,
+                    chainId: stack.token.chainId,
+                    type: 'TRAILING_STOP',
+                    name: `Trailing Stop ${trailPercent}%`,
+                    color: 'rose',
+                    allocationPercent: allocationPercent, // Computed from amount
+                    config: {
+                        targetTokenAddress: targetAddress,
+                        targetTokenSymbol: targetSymbol,
+                        targetTokenDecimals: targetDecimals,
+                        trailPercent: trailPercent,
+                        activationPrice: currentPrice.toString(),
+                        peakPrice: currentPrice.toString(),
+                        allocationAmount: allocationAmount.toString(), // Explicitly send amount
+                        action: 'SELL'
+                    }
+                })
+            })
+
+            const data = await res.json()
+            if (data.success) {
+                toast.success("Trailing Stop Activated", `Protecting ${stack.token.symbol} at -${trailPercent}% from peak.`)
+                if (onSuccess) onSuccess()
+                onClose()
+            } else {
+                toast.error("Failed to activate", data.error || "Unknown error")
+            }
+        } catch (e) {
+            console.error(e)
+            toast.error("Error activating strategy")
+        } finally {
+            setIsSaving(false)
+        }
+    }
+
+    if (!isOpen) return null
+
+    return (
+        <AnimatePresence>
+            <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center sm:p-4 bg-black/80 backdrop-blur-sm">
+                <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    className="absolute inset-0"
+                    onClick={onClose}
+                />
+
+                <motion.div
+                    initial={{ y: "100%", opacity: 0, scale: 0.95 }}
+                    animate={{ y: 0, opacity: 1, scale: 1 }}
+                    exit={{ y: "100%", opacity: 0, scale: 0.95 }}
+                    transition={{ type: "spring", damping: 25, stiffness: 300 }}
+                    className="relative w-full sm:max-w-md bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800/50 rounded-t-3xl sm:rounded-3xl overflow-hidden shadow-2xl ring-1 ring-black/5 dark:ring-white/10"
+                    onClick={e => e.stopPropagation()}
+                >
+                    {/* Header */}
+                    {/* Header */}
+                    <div className="flex items-center justify-between p-6 border-b border-zinc-100 dark:border-zinc-900 bg-zinc-50/50 dark:bg-zinc-950/50">
+                        <div className="flex items-center gap-3">
+                            <div className={`p-2 rounded-xl ${step === 'CONFIG' ? 'bg-rose-500/10 text-rose-500' : 'bg-emerald-500/10 text-emerald-500'} transition-colors duration-500`}>
+                                {step === 'CONFIG' ? <TrendingDown className="w-5 h-5" /> : <Shield className="w-5 h-5" />}
+                            </div>
+                            <div>
+                                <h3 className="text-lg font-bold text-zinc-900 dark:text-white tracking-tight">Trailing Stop</h3>
+                                <p className="text-xs text-zinc-500 font-medium">Dynamic Risk Management</p>
+                            </div>
+                        </div>
+                        <button onClick={onClose} className="p-2 rounded-full hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-500 transition-colors">
+                            <X className="w-5 h-5" />
+                        </button>
+                    </div>
+
+                    {/* Content */}
+                    <div className="p-6">
+                        <AnimatePresence mode="wait">
+                            {step === 'CONFIG' ? (
+                                <motion.div
+                                    key="config"
+                                    initial={{ opacity: 0, x: -20 }}
+                                    animate={{ opacity: 1, x: 0 }}
+                                    exit={{ opacity: 0, x: 20 }}
+                                    className="space-y-8"
+                                >
+                                    {/* Visualizer Card */}
+                                    <div className="p-5 rounded-2xl bg-zinc-50 dark:bg-zinc-900/50 border border-zinc-200 dark:border-zinc-800/50 relative overflow-hidden group">
+                                        <div className="flex justify-between items-end mb-4 relative z-10">
+                                            <div>
+                                                <div className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-1">Peak Price</div>
+                                                <div className="text-2xl font-mono text-zinc-900 dark:text-white tracking-tighter">${currentPrice.toFixed(2)}</div>
+                                            </div>
+                                            <div className="text-right">
+                                                <div className="text-xs font-bold text-rose-500 uppercase tracking-widest mb-1">Stop Price</div>
+                                                <div className="text-xl font-mono text-rose-500 tracking-tighter">${stopPrice.toFixed(2)}</div>
+                                            </div>
+                                        </div>
+
+                                        {/* Dynamic Bar Visual */}
+                                        <div className="w-full h-1.5 bg-zinc-200 dark:bg-zinc-800 rounded-full overflow-hidden flex items-center">
+                                            <motion.div
+                                                className="h-full bg-rose-500 rounded-full"
+                                                initial={{ width: 0 }}
+                                                animate={{ width: `${100 - trailPercent}%` }}
+                                                transition={{ type: "spring", bounce: 0 }}
+                                            />
+                                            <div className="h-full w-0.5 bg-white shadow-[0_0_10px_white]" />
+                                            <div className="h-full bg-emerald-500/20 flex-1" />
+                                        </div>
+                                        <div className="flex justify-between mt-2 text-[10px] font-mono text-zinc-600">
+                                            <span>Floor</span>
+                                            <span>Current Gap: {trailPercent}%</span>
+                                            <span>Peak</span>
+                                        </div>
+                                    </div>
+
+                                    {/* Slider Control */}
+                                    <div className="space-y-4">
+                                        <div className="flex justify-between items-center">
+                                            <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Trailing Distance</label>
+                                            <span className="text-2xl font-bold text-rose-500">{trailPercent}%</span>
+                                        </div>
+                                        <input
+                                            type="range"
+                                            min="1"
+                                            max="50"
+                                            step="0.5"
+                                            value={trailPercent}
+                                            onChange={(e) => setTrailPercent(parseFloat(e.target.value))}
+                                            className="w-full h-2 bg-zinc-200 dark:bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-rose-500 hover:accent-rose-400 transition-all"
+                                        />
+                                        <p className="text-xs text-zinc-500 leading-relaxed">
+                                            If the price rises, your stop follows. If it drops <strong>{trailPercent}%</strong> from the new peak, we sell immediately.
+                                        </p>
+                                    </div>
+
+                                    {/* Allocation Slider & Input */}
+                                    <div className="space-y-4">
+                                        <div className="flex justify-between items-center">
+                                            <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Allocation to Sell</label>
+                                            <div className="text-right">
+                                                <div className="flex items-center gap-2">
+                                                    <input
+                                                        type="number"
+                                                        value={allocationAmount}
+                                                        onChange={(e) => {
+                                                            let val = parseFloat(e.target.value)
+                                                            if (isNaN(val)) val = 0
+                                                            if (val > availableBudget) val = availableBudget
+                                                            setAllocationAmount(val)
+                                                        }}
+                                                        className="w-24 text-right p-1 rounded-md bg-zinc-100 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-lg font-bold text-zinc-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500/50"
+                                                    />
+                                                    <span className="text-sm font-bold text-zinc-500">{stack.token.symbol}</span>
+                                                </div>
+                                                <div className="text-[10px] text-zinc-500 mt-1">
+                                                    Available: {availableBudget.toFixed(2)} {stack.token.symbol} ({maxPercent}% cap)
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <input
+                                            type="range"
+                                            min="0"
+                                            max={availableBudget}
+                                            step={availableBudget > 100 ? "1" : "0.01"}
+                                            value={allocationAmount}
+                                            onChange={(e) => setAllocationAmount(parseFloat(e.target.value))}
+                                            disabled={availableBudget <= 0}
+                                            className={`w-full h-2 rounded-lg appearance-none cursor-pointer transition-all ${availableBudget <= 0 ? 'bg-zinc-100 dark:bg-zinc-900 cursor-not-allowed' : 'bg-zinc-200 dark:bg-zinc-800 accent-zinc-500 hover:accent-zinc-400'}`}
+                                        />
+
+                                        <div className="flex justify-between text-xs text-zinc-500">
+                                            <span>{allocationPercent}% of Stack</span>
+                                            {availableBudget <= 0 && <span className="text-rose-500">No funds available</span>}
+                                        </div>
+                                    </div>
+
+                                    <button
+                                        onClick={() => setStep('REVIEW')}
+                                        disabled={allocationAmount <= 0}
+                                        className="w-full py-4 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold tracking-wide shadow-lg shadow-rose-900/20 transition-all transform hover:scale-[1.02] active:scale-[0.98]"
+                                    >
+                                        Review Strategy
+                                    </button>
+                                </motion.div>
+                            ) : (
+                                <motion.div
+                                    key="review"
+                                    initial={{ opacity: 0, x: 20 }}
+                                    animate={{ opacity: 1, x: 0 }}
+                                    exit={{ opacity: 0, x: -20 }}
+                                    className="space-y-6"
+                                >
+                                    <div className="text-center space-y-2 mb-8">
+                                        <div className="w-16 h-16 rounded-2xl bg-rose-500/10 flex items-center justify-center mx-auto mb-4 border border-rose-500/20">
+                                            <Shield className="w-8 h-8 text-rose-500 animate-pulse" />
+                                        </div>
+                                        <h3 className="text-xl font-bold text-zinc-900 dark:text-white">Activate Protection?</h3>
+                                        <p className="text-sm text-zinc-400 max-w-[280px] mx-auto">
+                                            Your <strong>{trailPercent}% Trailing Stop</strong> will be active immediately.
+                                        </p>
+                                    </div>
+
+                                    <div className="space-y-3 bg-zinc-50 dark:bg-zinc-900/30 p-4 rounded-xl border border-zinc-200 dark:border-zinc-800">
+                                        <div className="flex justify-between text-sm">
+                                            <span className="text-zinc-500">Asset</span>
+                                            <span className="text-zinc-900 dark:text-white font-mono">{stack.token.symbol}</span>
+                                        </div>
+                                        <div className="flex justify-between text-sm">
+                                            <span className="text-zinc-500">Trailing Gap</span>
+                                            <span className="text-rose-400 font-mono">-{trailPercent}%</span>
+                                        </div>
+                                        <div className="flex justify-between text-sm">
+                                            <span className="text-zinc-500">Allocation</span>
+                                            <span className="text-zinc-900 dark:text-white font-mono">{allocationPercent}%</span>
+                                        </div>
+                                        <div className="flex justify-between text-sm">
+                                            <span className="text-zinc-500">Initial Stop</span>
+                                            <span className="text-zinc-900 dark:text-white font-mono">${stopPrice.toFixed(2)}</span>
+                                        </div>
+                                    </div>
+
+                                    <div className="grid grid-cols-2 gap-3 mt-4">
+                                        <button
+                                            onClick={() => setStep('CONFIG')}
+                                            className="py-3 rounded-xl bg-zinc-100 dark:bg-zinc-900 hover:bg-zinc-200 dark:hover:bg-zinc-800 text-zinc-600 dark:text-zinc-300 font-medium transition-colors"
+                                        >
+                                            Back
+                                        </button>
+                                        <button
+                                            onClick={handleSave}
+                                            disabled={isSaving}
+                                            className="py-3 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold shadow-lg shadow-rose-900/20 transition-all flex items-center justify-center gap-2"
+                                        >
+                                            {isSaving ? <Loader2 className="w-5 h-5 animate-spin" /> : "Confirm"}
+                                        </button>
+                                    </div>
+                                </motion.div>
+                            )}
+                        </AnimatePresence>
+                    </div>
+                </motion.div>
+            </div >
+        </AnimatePresence >
+    )
+}
+
+
+function TrailingStopSimulationModal({
+    isOpen,
+    onClose,
+    strategy,
+    stack,
+    onExecute
+}: {
+    isOpen: boolean
+    onClose: () => void
+    strategy: StackCardData['subCards'][0]
+    stack: StackCardData
+    onExecute: (stackId: string, subCardId: string, amount: number) => Promise<boolean>
+}) {
+    const [currentPrice, setCurrentPrice] = useState(100) // Start at 100 (normalized)
+    const [peakPrice, setPeakPrice] = useState(100)
+    const [isExecuting, setIsExecuting] = useState(false)
+    const [triggered, setTriggered] = useState(false)
+
+    // Config
+    const trailPercent = parseFloat((strategy.config as any)?.trailPercent || "10")
+
+    // Reset on Open
+    useEffect(() => {
+        if (isOpen) {
+            setCurrentPrice(100)
+            setPeakPrice(100)
+            setTriggered(false)
+            setIsExecuting(false)
+        }
+    }, [isOpen])
+
+    // Update Peak
+    useEffect(() => {
+        if (currentPrice > peakPrice) setPeakPrice(currentPrice)
+    }, [currentPrice, peakPrice])
+
+    // Calculate Stop
+    const stopPrice = peakPrice * (1 - trailPercent / 100)
+
+    // Check Trigger
+    useEffect(() => {
+        if (currentPrice <= stopPrice && !triggered) {
+            setTriggered(true)
+        }
+    }, [currentPrice, stopPrice, triggered])
+
+    const handleExecute = async () => {
+        setIsExecuting(true)
+        try {
+            // 1. Try to get EXACT amount from config (if saved)
+            // This fixes the integer truncation bug for small allocations
+            const configAlloc = (strategy.config as any)?.allocationAmount
+            let executeAmount = 0
+
+            if (configAlloc) {
+                executeAmount = parseFloat(configAlloc)
+            } else {
+                // 2. Fallback to percentage logic (legacy/backup)
+                // strategy.budget holds the PERCENTAGE (e.g. 10 for 10%), retrieved from allocationPercent
+                const pct = strategy.budget ? parseFloat(strategy.budget.toString()) : 0
+                const calculatedAmount = (pct / 100) * stack.totalBudget
+
+                // Fallback to a safe small amount if 0, else use calculated amount
+                executeAmount = calculatedAmount > 0 ? parseFloat(calculatedAmount.toFixed(stack.token.decimals)) : 0.1
+            }
+
+            const success = await onExecute(stack.id, strategy.id, executeAmount)
+            if (success) {
+                // Optional: Wait a bit before closing to show success state if any
+                setTimeout(onClose, 500)
+            }
+        } finally {
+            setIsExecuting(false)
+        }
+    }
+
+    if (!isOpen) return null
+
+    return (
+        <AnimatePresence>
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+                <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    onClick={onClose}
+                    className="absolute inset-0 bg-background/80 backdrop-blur-sm"
+                />
+                <motion.div
+                    initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                    className="relative w-full max-w-md bg-card border border-border rounded-3xl overflow-hidden shadow-2xl"
+                >
+                    {/* Header */}
+                    <div className="p-6 border-b border-border bg-muted/30 flex items-center justify-between">
+                        <div>
+                            <h3 className="text-lg font-bold text-foreground flex items-center gap-2">
+                                <Activity className="w-5 h-5 text-rose-500" />
+                                Crash Test Simulator
+                            </h3>
+                            <p className="text-xs text-muted-foreground">Drag execution price to test trigger</p>
+                        </div>
+                        <button onClick={onClose} className="p-2 rounded-full hover:bg-muted text-muted-foreground transition-colors">
+                            <X className="w-5 h-5" />
+                        </button>
+                    </div>
+
+                    <div className="p-6 space-y-8">
+                        {/* Status Graph */}
+                        <div className="relative h-40 bg-muted/30 rounded-2xl p-4 flex items-end justify-center gap-4 border border-border overflow-hidden">
+                            {/* Peak Line */}
+                            <motion.div
+                                className="absolute left-0 right-0 border-t-2 border-dashed border-emerald-500/50 z-10 flex items-center justify-end px-2"
+                                animate={{ bottom: `${(peakPrice - 80) * 2.5}%` }}
+                            >
+                                <span className="text-[10px] font-bold text-emerald-500 bg-background/80 px-1 rounded shadow-sm border border-border/50">Peak: ${peakPrice.toFixed(2)}</span>
+                            </motion.div>
+
+                            {/* Stop Line */}
+                            <motion.div
+                                className="absolute left-0 right-0 border-t-2 border-rose-500 z-10 flex items-center justify-end px-2"
+                                animate={{ bottom: `${(stopPrice - 80) * 2.5}%` }}
+                            >
+                                <span className="text-[10px] font-bold text-rose-500 bg-background/80 px-1 rounded shadow-sm border border-border/50">Stop: ${stopPrice.toFixed(2)}</span>
+                            </motion.div>
+
+                            {/* Current Price Bar */}
+                            <div className="relative w-12 bg-muted rounded-t-lg h-full overflow-hidden">
+                                <motion.div
+                                    className={`absolute bottom-0 w-full ${triggered ? 'bg-rose-500' : 'bg-background border-2 border-muted-foreground/20'}`}
+                                    animate={{ height: `${(currentPrice - 80) * 2.5}%` }}
+                                />
+                            </div>
+                        </div>
+
+                        {/* Controls */}
+                        <div className="space-y-4">
+                            <div className="flex items-center justify-between text-sm">
+                                <span className="text-muted-foreground">Market Price</span>
+                                <span className={`font-mono font-bold ${triggered ? 'text-rose-500' : 'text-foreground'}`}>
+                                    ${currentPrice.toFixed(2)}
+                                </span>
+                            </div>
+                            <input
+                                type="range"
+                                min="80"
+                                max="130"
+                                step="0.5"
+                                value={currentPrice}
+                                onChange={(e) => setCurrentPrice(parseFloat(e.target.value))}
+                                className="w-full h-2 bg-muted rounded-lg appearance-none cursor-pointer accent-primary"
+                                disabled={isExecuting}
+                            />
+                            <div className="flex justify-between text-[10px] text-muted-foreground font-mono">
+                                <span>$80 (Crash)</span>
+                                <span>$130 (Pump)</span>
+                            </div>
+                        </div>
+
+                        {/* Trigger State */}
+                        <AnimatePresence>
+                            {triggered && (
+                                <motion.div
+                                    initial={{ opacity: 0, height: 0 }}
+                                    animate={{ opacity: 1, height: 'auto' }}
+                                    className="pt-2"
+                                >
+                                    <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/20 text-center space-y-3 dark:border-rose-500/50">
+                                        <div className="flex flex-col items-center gap-1">
+                                            <Shield className="w-8 h-8 text-rose-500 mb-1" />
+                                            <h4 className="text-lg font-bold text-rose-600 dark:text-rose-500">STOP LOSS TRIGGERED</h4>
+                                            <p className="text-xs text-rose-600/70 dark:text-rose-200/70">Price fell {trailPercent}% below peak</p>
+                                        </div>
+                                        <button
+                                            onClick={handleExecute}
+                                            disabled={isExecuting}
+                                            className="w-full py-3 rounded-lg bg-rose-500 hover:bg-rose-600 text-white font-bold text-sm transition-all flex items-center justify-center gap-2 shadow-lg shadow-rose-500/20"
+                                        >
+                                            {isExecuting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
+                                            {isExecuting ? 'SELLING...' : 'EXECUTE PRESERVATION'}
+                                        </button>
+                                    </div>
+                                </motion.div>
+                            )}
+                        </AnimatePresence>
+                    </div>
+                </motion.div>
+            </div>
+        </AnimatePresence>
+    )
+}
+
 function StackManagementModal({ isOpen, onClose, stack, onSuccess }: StackManagementModalProps) {
     const [view, setView] = useState<'MENU' | 'EDIT' | 'SIGNING' | 'SUCCESS'>('MENU')
     const [confirmDelete, setConfirmDelete] = useState(false)
@@ -2540,7 +3115,7 @@ function StackManagementModal({ isOpen, onClose, stack, onSuccess }: StackManage
                                     {/* Delete Stack (Active) */}
                                     <button
                                         onClick={() => setConfirmDelete(true)}
-                                        className="w-full group flex items-center justify-between p-4 rounded-xl border border-red-200/50 bg-red-50/50 hover:bg-red-100/50 hover:border-red-200 dark:bg-red-900/10 dark:hover:bg-red-900/20 dark:border-red-900/30 transition-all"
+                                        className="w-full group flex items-center justify-between p-4 rounded-xl border border-red-200/50 bg-red-50/50 dark:bg-red-900/10 hover:bg-red-100/50 dark:hover:bg-red-900/20 dark:border-red-900/30 transition-all"
                                     >
                                         <div className="flex items-center gap-3">
                                             <div className="p-2 rounded-lg bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400">
@@ -3384,10 +3959,10 @@ function ConfigureLimitModal({ isOpen, onClose, stack, onSuccess }: ConfigureLim
     }
 
     const formatUsdValue = (value: number | string) => {
-        const num = typeof value === 'string' ? parseFloat(value) : value;
-        if (isNaN(num)) return '';
-        return num.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 });
-    };
+        const num = typeof value === 'string' ? parseFloat(value) : value
+        if (isNaN(num)) return ''
+        return num.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })
+    }
 
     return (
         <>
@@ -3942,6 +4517,7 @@ interface StackCardProps {
     stack: StackCardData
     onExecuteDCA: (stackId: string, subCardId: string, amount: number) => Promise<boolean>
     onExecuteSubscription: (stackId: string, subCardId: string, amount: number) => Promise<boolean>
+    onExecuteTrailingStop: (stackId: string, subCardId: string, amount: number) => Promise<boolean>
     onRefetch?: () => void
     isExecuting?: boolean
     executingSubCardId?: string | null
@@ -3949,7 +4525,7 @@ interface StackCardProps {
     onManage?: (stack: StackCardData) => void
 }
 
-function StackCard({ stack, onExecuteDCA, onExecuteSubscription, onRefetch, isExecuting, executingSubCardId, supportedTokens, onManage }: StackCardProps) {
+function StackCard({ stack, onExecuteDCA, onExecuteSubscription, onExecuteTrailingStop, onRefetch, isExecuting, executingSubCardId, supportedTokens, onManage }: StackCardProps) {
     const { dca, limits, subscription, manual } = useMemo(() => {
         return {
             dca: stack.subCards.find(s => s.name?.includes("DCA") || s.name?.includes("Auto")),
@@ -3971,6 +4547,7 @@ function StackCard({ stack, onExecuteDCA, onExecuteSubscription, onRefetch, isEx
     // Demo Simulation Modal State
     const [showSimulationModal, setShowSimulationModal] = useState(false)
     const [simulatingStrategy, setSimulatingStrategy] = useState<StackCardData['subCards'][0] | null>(null)
+    const [showTrailingStopModal, setShowTrailingStopModal] = useState(false)
 
     // Filter to only configured strategies
     const configuredStrategies = useMemo(() => {
@@ -4031,7 +4608,34 @@ function StackCard({ stack, onExecuteDCA, onExecuteSubscription, onRefetch, isEx
                         onSuccess={onRefetch}
                     />
                 )}
-                {showSimulationModal && simulatingStrategy && (
+                {showTrailingStopModal && (
+                    <ConfigureTrailingStopModal
+                        isOpen={showTrailingStopModal}
+                        onClose={() => setShowTrailingStopModal(false)}
+                        stack={stack}
+                        onSuccess={onRefetch}
+                    />
+                )}
+                {showSimulationModal && simulatingStrategy?.type === 'TRAILING_STOP' && (
+                    <TrailingStopSimulationModal
+                        isOpen={showSimulationModal}
+                        onClose={() => {
+                            setShowSimulationModal(false)
+                            setSimulatingStrategy(null)
+                        }}
+                        strategy={simulatingStrategy}
+                        stack={stack}
+                        onExecute={async (sid, sub, amt) => {
+                            const res = await onExecuteTrailingStop(sid, sub, amt)
+                            if (res) {
+                                setShowSimulationModal(false)
+                                setSimulatingStrategy(null)
+                            }
+                            return res
+                        }}
+                    />
+                )}
+                {showSimulationModal && simulatingStrategy && simulatingStrategy.type !== 'TRAILING_STOP' && (
                     <LimitOrderSimulationModal
                         isOpen={showSimulationModal}
                         onClose={() => {
@@ -4081,6 +4685,10 @@ function StackCard({ stack, onExecuteDCA, onExecuteSubscription, onRefetch, isEx
                 onAddSubscription={() => {
                     setShowAddStrategyModal(false)
                     setShowSubscriptionModal(true)
+                }}
+                onAddTrailingStop={() => {
+                    setShowAddStrategyModal(false)
+                    setShowTrailingStopModal(true)
                 }}
             />
 
@@ -4262,6 +4870,93 @@ function StackCard({ stack, onExecuteDCA, onExecuteSubscription, onRefetch, isEx
                                 const targetTokenInfo = supportedTokens.find(t => t.symbol === config?.targetTokenSymbol)
                                 const isLimit = strategy.type === 'LIMIT_ORDER' || strategy.name.includes('Limit')
                                 const isSubscription = strategy.type === 'SUBSCRIPTION' || strategy.name.includes("Auto-Pay")
+
+                                // Custom Trailing Stop Renderer
+                                if (strategy.type === 'TRAILING_STOP') {
+                                    const trailPercent = parseFloat(config?.trailPercent || '10')
+                                    // Dynamic Mock for Card View
+                                    const currentPrice = (() => {
+                                        const s = stack.token.symbol.toUpperCase()
+                                        if (s.includes('BTC')) return 65000.00
+                                        if (s.includes('ETH')) return 2450.00
+                                        if (s.includes('SOL')) return 145.00
+                                        if (s.includes('LINK')) return 15.00
+                                        return 100.00
+                                    })()
+                                    const stopPrice = parseFloat(config?.activationPrice || (currentPrice * (1 - trailPercent / 100)).toString())
+                                    const gap = ((currentPrice - stopPrice) / currentPrice) * 100
+
+                                    return (
+                                        <motion.div
+                                            key={strategy.id}
+                                            initial={{ opacity: 0, scale: 0.95 }}
+                                            animate={{ opacity: 1, scale: 1 }}
+                                            className="p-4 rounded-xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:border-rose-500/30 transition-all flex flex-col justify-between"
+                                        >
+                                            <div className="flex items-start justify-between mb-4">
+                                                <div className="flex items-center gap-3">
+                                                    <div className="p-2 rounded-lg bg-rose-500/10 text-rose-500">
+                                                        <TrendingDown className="w-4 h-4" />
+                                                    </div>
+                                                    <div>
+                                                        <h4 className="text-sm font-bold text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
+                                                            Trailing Stop
+                                                            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-500 text-white">
+                                                                -{trailPercent}%
+                                                            </span>
+                                                        </h4>
+                                                        <span className="text-xs text-zinc-500">Protecting {stack.token.symbol}</span>
+                                                    </div>
+                                                </div>
+                                                <button
+                                                    onClick={() => {
+                                                        setManagingSubscription(strategy)
+                                                        setShowSubscriptionManagementModal(true)
+                                                    }}
+                                                    className="p-1 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-md transition-colors"
+                                                >
+                                                    <Settings className="w-3.5 h-3.5 text-zinc-500 hover:text-rose-500" />
+                                                </button>
+                                            </div>
+
+                                            {/* Mini Visualizer */}
+                                            <div className="space-y-1 mb-4">
+                                                <div className="flex justify-between text-[10px] font-medium text-zinc-500 dark:text-zinc-400">
+                                                    <span>Stop: ${stopPrice.toLocaleString()}</span>
+                                                    <span>Current: ${currentPrice.toLocaleString()}</span>
+                                                </div>
+                                                <div className="h-2 w-full bg-zinc-100 dark:bg-zinc-950 rounded-full overflow-hidden relative border border-zinc-200 dark:border-zinc-800/50">
+                                                    {/* Danger Zone */}
+                                                    <div className="absolute left-0 top-0 bottom-0 bg-rose-900/30 w-full" />
+                                                    {/* Stop Line */}
+                                                    <div
+                                                        className="absolute top-0 bottom-0 w-0.5 bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.8)] z-10"
+                                                        style={{ left: '20%' }} // Mock position
+                                                    />
+                                                    {/* Current Price Dot */}
+                                                    <div
+                                                        className="absolute top-1/2 -translate-y-1/2 w-1.5 h-1.5 rounded-full bg-white shadow-[0_0_8px_rgba(255,255,255,0.8)] z-20"
+                                                        style={{ left: '80%' }} // Mock position
+                                                    />
+                                                </div>
+                                                <div className="text-center text-[10px] text-zinc-600 font-mono">
+                                                    Gap: {gap.toFixed(2)}% | Warning Zone
+                                                </div>
+                                            </div>
+
+                                            <button
+                                                onClick={() => {
+                                                    setSimulatingStrategy(strategy)
+                                                    setShowSimulationModal(true)
+                                                }}
+                                                className="w-full py-2 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-500 text-xs font-bold border border-rose-500/20 transition-all flex items-center justify-center gap-2"
+                                            >
+                                                <Play className="w-3 h-3 fill-current" />
+                                                Simulate Market
+                                            </button>
+                                        </motion.div>
+                                    )
+                                }
 
                                 // Robust Label Logic: Try config.label -> parsing strategy.name -> config.recipient -> 'Recipient'
                                 let displayLabel = config?.label

@@ -192,6 +192,7 @@ enum NotificationType {
   PERMISSION_EXPIRING
   PERMISSION_EXPIRED
   SYSTEM_INFO
+  TRAILING_STOP_EXECUTED
 }
 
 enum SmartCardStatus {
@@ -234,6 +235,7 @@ enum ActivityType {
   LIMIT_ORDER_EXECUTE
   APPROVAL
   BRIDGE
+  TRAILING_STOP_EXECUTION
 }
 
 enum StackStatus {
@@ -247,4 +249,5 @@ enum SubCardType {
   LIMIT_ORDER
   MANUAL_TRADING
   SUBSCRIPTION
+  TRAILING_STOP
 }

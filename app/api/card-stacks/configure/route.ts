@@ -40,6 +40,13 @@ export async function POST(req: NextRequest) {
         const paymentDay = config?.paymentDay
         const nextPaymentDate = config?.nextPaymentDate
 
+
+        // Trailing Stop specific fields
+        const trailPercent = config?.trailPercent
+        const activationPrice = config?.activationPrice
+        const peakPrice = config?.peakPrice
+        const allocationAmount = config?.allocationAmount || body.allocationAmount // Explicitly save amount
+
         console.log("[Configure API] Updating stack configuration:", {
             stackId,
             subCardId,
@@ -120,11 +127,21 @@ export async function POST(req: NextRequest) {
                             nextPaymentDate,
                             action: action || 'TRANSFER'
                         } : {}),
+                        // Trailing Stop specific fields
+                        ...(subCardType === 'TRAILING_STOP' ? {
+                            trailPercent,
+                            activationPrice,
+                            peakPrice,
+                            allocationAmount, // Save amount to Config
+                            action: 'SELL'
+                        } : {}),
                         description: subCardType === 'LIMIT_ORDER'
                             ? `Limit order: Buy ${targetTokenSymbol} at $${targetPrice}`
                             : subCardType === 'SUBSCRIPTION'
                                 ? `Auto-pay ${label || 'subscription'} ${frequency?.toLowerCase() || 'monthly'}`
-                                : "Auto-buy from Add Strategy",
+                                : subCardType === 'TRAILING_STOP'
+                                    ? `Trailing Stop: Sell if drops ${trailPercent}%`
+                                    : "Auto-buy from Add Strategy",
                     }
                 }
             })

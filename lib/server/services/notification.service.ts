@@ -439,6 +439,9 @@ export async function notifyLimitOrderExecuted(
 /**
  * Send subscription payment notification
  */
+/**
+ * Send subscription payment notification
+ */
 export async function notifySubscriptionPaid(
     walletAddress: string,
     chainId: number,
@@ -461,6 +464,38 @@ export async function notifySubscriptionPaid(
             amount: data.amount,
             token: data.token,
             recipient: data.recipient,
+            txHash: data.txHash,
+        }
+    })
+}
+
+/**
+ * Send trailing stop executed notification
+ */
+export async function notifyTrailingStopExecuted(
+    walletAddress: string,
+    chainId: number,
+    data: {
+        stackName: string
+        amountIn: string
+        amountOut: string
+        tokenIn: string
+        tokenOut: string
+        txHash: string
+    }
+) {
+    return createNotification({
+        walletAddress,
+        chainId,
+        type: 'TRAILING_STOP_EXECUTED' as any,
+        title: 'Trailing Stop Triggered! 🛡️',
+        message: `Protected position: Sold ${data.amountIn} ${data.tokenIn} → ${data.amountOut} ${data.tokenOut}`,
+        metadata: {
+            stackName: data.stackName,
+            amountIn: data.amountIn,
+            amountOut: data.amountOut,
+            tokenIn: data.tokenIn,
+            tokenOut: data.tokenOut,
             txHash: data.txHash,
         }
     })

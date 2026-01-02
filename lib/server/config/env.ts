@@ -25,6 +25,9 @@ export const env = {
 
     // Pimlico
     PIMLICO_API_KEY: process.env.PIMLICO_API_KEY || "pim_gpv8uAY4a3SK7ioMf6Y7nh",
+
+    // AI/LLM Services
+    GROQ_API_KEY: process.env.GROQ_API_KEY || "",
 };
 
 /**

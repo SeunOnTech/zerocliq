@@ -50,7 +50,8 @@ export interface DCAExecutionParams {
     cardStackId: string
     subCardId?: string
     amount?: string
-    recipientAddress?: string
+    recipientAddress?: string // Optional override for recipient (e.g. for subscription payments)
+    suppressLogs?: boolean // If true, skips default DCA activity/notification logging
 }
 
 class DCAService {
@@ -125,13 +126,20 @@ class DCAService {
         console.log(`[DCA Transfer] Agent SA: ${agentSmartAccount.address}`)
 
         // Calculate amount
+        // Calculate amount (Assume input is ALWAYS human-readable string, e.g. "1.5" or "10")
         const amountStr = amount || cardStack.amountPerExecution || "1"
         let transferAmount: bigint
-        if (amountStr.includes(".")) {
+
+        try {
+            // Safe conversion for both integers ("10") and floats ("0.5")
+            // We use standard math if parseUnits isn't imported, or simple multiplication
+            // Since we might not have parseUnits imported, let's stick to the math logic but applied to ALL
             const parsed = parseFloat(amountStr)
+            if (isNaN(parsed)) throw new Error("Invalid amount")
             transferAmount = BigInt(Math.round(parsed * Math.pow(10, cardStack.tokenDecimals)))
-        } else {
-            transferAmount = BigInt(amountStr)
+        } catch (e) {
+            console.error("Failed to parse amount:", amountStr, e)
+            transferAmount = BigInt(0)
         }
 
         console.log(`[DCA Transfer] Transferring ${amountStr} ${cardStack.tokenSymbol} (${transferAmount} wei)`)
@@ -282,8 +290,24 @@ class DCAService {
 
         if (!cardStack) throw new Error("Card Stack not found during swap phase") // Should be impossible if transfer worked
 
+        // Find SubCard Config to Determine Target
+        let targetAddress = cardStack.targetTokenAddress
+        let targetSymbol = cardStack.targetTokenSymbol
+        let targetDecimals = cardStack.targetTokenDecimals
+
+        if (params.subCardId) {
+            const sc = cardStack.subCards.find(s => s.id === params.subCardId)
+            const cfg = sc?.config as any
+            if (cfg?.targetTokenAddress) {
+                targetAddress = cfg.targetTokenAddress
+                targetSymbol = cfg.targetTokenSymbol
+                targetDecimals = cfg.targetTokenDecimals
+                console.log(`[DCA Swap] Using Strategy-Specific Target: ${targetSymbol} (${targetAddress})`)
+            }
+        }
+
         // Validation: Do we have a target token?
-        if (!cardStack.targetTokenAddress || !cardStack.targetTokenSymbol) {
+        if (!targetAddress || !targetSymbol) {
             console.log(`[DCA Swap] No target token configured. Ending execution.`)
             return {
                 ...transferResult,
@@ -291,7 +315,7 @@ class DCAService {
             }
         }
 
-        console.log(`[DCA Swap] Target: ${cardStack.targetTokenSymbol} (${cardStack.targetTokenAddress})`)
+        console.log(`[DCA Swap] Target: ${targetSymbol} (${targetAddress})`)
         console.log(`[DCA Swap] Amount to swap: ${transferResult.amountIn}`)
 
         const chainId = 11155111
@@ -321,22 +345,23 @@ class DCAService {
         const quote = await swapService.getQuote({
             chainId,
             tokenIn: cardStack.tokenAddress,
-            tokenOut: cardStack.targetTokenAddress,
-            amountIn: transferResult.amountIn, // Ensure we use the exact amount transferred
+            tokenOut: targetAddress, // Use dynamic target
+            amountIn: transferResult.amountIn,
             amountInRaw: true,
             userAddress: agentSmartAccount.address,
-            slippageBps: 200, // 2% slippage for safety
+            slippageBps: 200,
         })
 
         if (!quote.success || !quote.bestRoute) {
             console.error(`[DCA Swap] Quote failed: ${quote.error}`)
             return {
                 ...transferResult,
+                success: false,
                 error: `Swap quote failed: ${quote.error}`
             }
         }
 
-        console.log(`[DCA Swap] Quote received: ${quote.bestRoute.amountOut} ${cardStack.targetTokenSymbol}`)
+        console.log(`[DCA Swap] Quote received: ${quote.bestRoute.amountOut} ${targetSymbol}`)
         console.log(`[DCA Swap] Route: via ${quote.bestRoute.dexName}`)
 
         // 2. Build Execution
@@ -353,7 +378,7 @@ class DCAService {
                 minAmountOut: BigInt(quote.bestRoute.minAmountOut),
             },
             userAddress: agentSmartAccount.address,
-            recipient: cardStack.user.walletAddress as Address, // Send output directly to User
+            recipient: cardStack.user.walletAddress as Address,
             deadline: Math.floor(Date.now() / 1000) + 300,
             client: publicClient,
             tokenIn,
@@ -363,8 +388,6 @@ class DCAService {
 
         console.log(`[DCA Swap] Execution built. Contains ${execution.approvals.length} approvals + 1 swap.`)
 
-        // 3. Setup Client with Middleware (Important fix for Pimlico)
-        // 3. Setup Bundler (using same pattern as Transfer)
         const bundlerClient = createBundlerClient({
             client: publicClient,
             transport: http(paymasterUrl),
@@ -374,7 +397,6 @@ class DCAService {
         // 4. Build Calls
         const swapCalls: { to: Address; data: Hex; value?: bigint }[] = []
 
-        // Add approvals
         for (const approval of execution.approvals) {
             swapCalls.push({
                 to: approval.to,
@@ -383,7 +405,6 @@ class DCAService {
             })
         }
 
-        // Add swap
         swapCalls.push({
             to: execution.swap.to,
             data: execution.swap.data,
@@ -408,36 +429,38 @@ class DCAService {
 
             // Calculate rate
             const amountInNum = Number(transferResult.amountIn) / Math.pow(10, cardStack.tokenDecimals)
-            const amountOutNum = Number(quote.bestRoute.amountOut) / Math.pow(10, cardStack.targetTokenDecimals || 18)
+            const amountOutNum = Number(quote.bestRoute.amountOut) / Math.pow(10, targetDecimals || 18) // use targetDecimals
             const rate = (amountOutNum / amountInNum).toFixed(8)
 
-            // Log Activity & Notify
-            const dcaSubCard = cardStack.subCards.find(sc => sc.type === "DCA_BOT")
-            const stackName = dcaSubCard?.name || "DCA Stack"
-            const formattedAmountOut = formatUnits(BigInt(quote.bestRoute.amountOut), cardStack.targetTokenDecimals || 18)
+            // Log Activity & Notify (ONLY if not suppressed)
+            if (!params.suppressLogs) {
+                const dcaSubCard = cardStack.subCards.find(sc => sc.type === "DCA_BOT")
+                const stackName = dcaSubCard?.name || "DCA Stack"
+                const formattedAmountOut = formatUnits(BigInt(quote.bestRoute.amountOut), targetDecimals || 18)
 
-            await Promise.all([
-                logDCAExecutionActivity(cardStack.user.walletAddress, chainId, {
-                    status: ActivityStatus.SUCCESS,
-                    stackName,
-                    amount: formattedAmountOut,
-                    token: cardStack.targetTokenSymbol,
-                    txHash: receipt.receipt.transactionHash
-                }),
-                notifyDCAExecuted(cardStack.user.walletAddress, chainId, {
-                    stackName,
-                    amount: formattedAmountOut,
-                    token: cardStack.targetTokenSymbol,
-                    txHash: receipt.receipt.transactionHash
-                })
-            ]).catch(err => console.error("[DCA Swap] Failed to log activity/notification:", err))
+                await Promise.all([
+                    logDCAExecutionActivity(cardStack.user.walletAddress, chainId, {
+                        status: ActivityStatus.SUCCESS,
+                        stackName,
+                        amount: formattedAmountOut,
+                        token: targetSymbol, // use targetSymbol
+                        txHash: receipt.receipt.transactionHash
+                    }),
+                    notifyDCAExecuted(cardStack.user.walletAddress, chainId, {
+                        stackName,
+                        amount: formattedAmountOut,
+                        token: targetSymbol, // use targetSymbol
+                        txHash: receipt.receipt.transactionHash
+                    })
+                ]).catch(err => console.error("[DCA Swap] Failed to log activity/notification:", err))
+            }
 
             return {
-                ...transferResult, // Keep original transfer data
+                ...transferResult,
                 success: true,
                 swapTxHash: receipt.receipt.transactionHash,
                 amountOut: quote.bestRoute.amountOut,
-                targetToken: cardStack.targetTokenSymbol, // Ensure this is set
+                targetToken: targetSymbol,
                 rate
             }
 
@@ -451,6 +474,169 @@ class DCAService {
                 success: false
             }
         }
+    }
+    /**
+     * DEMO MODE: Execute DCA without DB persistence
+     * Used for AI Chat "Run Demo" flow
+     */
+    async executeDemoDCA(params: {
+        userAddress: string
+        sourceTokenAddress: string
+        sourceTokenSymbol: string
+        sourceTokenDecimals: number
+        targetTokenAddress: string
+        targetTokenSymbol: string
+        amount: string
+        permissionsContext: string
+    }): Promise<DCAExecutionResult> {
+        console.log(`[DCA Demo] Starting Demo Execution for ${params.userAddress}`)
+
+        const chainId = 11155111
+        const viemChain = getViemChain(chainId)
+        const environment = getSmartAccountsEnvironment(chainId)
+        const paymasterUrl = getPaymasterUrl(chainId)
+        const chainConfig = getChainById(chainId)
+
+        if (!chainConfig) throw new Error("Chain not supported")
+
+        try {
+            // 1. Setup Agent
+            const agentPrivateKey = process.env.AGENT_EOA_PRIVATE_KEY as Hex
+            const agentEOA = privateKeyToAccount(agentPrivateKey)
+            const publicClient = createPublicClient({ chain: viemChain, transport: http(chainConfig.rpcUrl) })
+
+            const agentSmartAccount = await toMetaMaskSmartAccount({
+                client: publicClient,
+                implementation: Implementation.Hybrid,
+                deployParams: [agentEOA.address, [], [], []],
+                deploySalt: AGENT_SMART_ACCOUNT_DEPLOY_SALT,
+                signer: { account: agentEOA },
+            })
+
+            // 2. Execute Transfer (User -> Agent)
+            console.log(`[DCA Demo] 1. Transferring ${params.amount} ${params.sourceTokenSymbol}`)
+
+            // Calculate amount in wei
+            let transferAmount: bigint
+            try {
+                const parsed = parseFloat(params.amount)
+                transferAmount = BigInt(Math.round(parsed * Math.pow(10, params.sourceTokenDecimals)))
+            } catch (e) {
+                console.error("Invalid amount", e)
+                return { success: false, amountIn: "0", sourceToken: params.sourceTokenSymbol, error: "Invalid amount" }
+            }
+
+            const bundlerClient = createBundlerClient({
+                client: publicClient,
+                transport: http(paymasterUrl),
+                paymaster: true,
+            }).extend(erc7710BundlerActions())
+
+            const transferCalldata = encodeFunctionData({
+                abi: ERC20_ABI,
+                functionName: "transfer",
+                args: [agentSmartAccount.address, transferAmount],
+            })
+
+            // 3. Get Swap Quote
+            console.log(`[DCA Demo] Getting quote for ${transferAmount} ${params.sourceTokenSymbol} -> ${params.targetTokenSymbol}`)
+            const quote = await swapService.getQuote({
+                chainId,
+                tokenIn: params.sourceTokenAddress,
+                tokenOut: params.targetTokenAddress,
+                amountIn: transferAmount.toString(),
+                amountInRaw: true,
+                userAddress: agentSmartAccount.address,
+                slippageBps: 200,
+            })
+
+            if (!quote.success || !quote.bestRoute) {
+                throw new Error(`Swap quote failed: ${quote.error}`)
+            }
+
+            // 4. Build Swap Execution
+            const tokenIn = chainConfig.tokens.find(t => t.address.toLowerCase() === params.sourceTokenAddress.toLowerCase())
+            if (!tokenIn) throw new Error("Unknown source token config")
+
+            const execution = await swapService.buildExecution({
+                route: {
+                    ...quote.bestRoute,
+                    dexId: quote.bestRoute.dexId as any,
+                    chainId,
+                    amountIn: transferAmount,
+                    amountOut: BigInt(quote.bestRoute.amountOut),
+                    minAmountOut: BigInt(quote.bestRoute.minAmountOut),
+                },
+                userAddress: agentSmartAccount.address,
+                recipient: params.userAddress as Address,
+                deadline: Math.floor(Date.now() / 1000) + 300,
+                client: publicClient,
+                tokenIn,
+            })
+
+            if (!execution) throw new Error("Failed to build swap execution")
+
+            // 5. Execute ATOMIC Batch (Transfer -> Approve -> Swap)
+            // We combine all calls into one UserOperationWithDelegation to avoid nonce conditions
+
+            // Construct Batch Calls
+            const calls = [
+                // 1. Transfer (Redeem Delegation)
+                {
+                    to: params.sourceTokenAddress as Address,
+                    data: transferCalldata,
+                    permissionsContext: params.permissionsContext as Hex,
+                    delegationManager: environment.DelegationManager as Address,
+                },
+                // 2. Approvals
+                ...execution.approvals.map(approval => ({
+                    to: approval.to,
+                    data: approval.data,
+                    value: BigInt(approval.value || 0)
+                })),
+                // 3. Swap
+                {
+                    to: execution.swap.to,
+                    data: execution.swap.data,
+                    value: BigInt(execution.swap.value || 0)
+                }
+            ]
+
+            console.log(`[DCA Demo] Executing Atomic Batch (${calls.length} calls)`)
+
+            const userOpHash = await bundlerClient.sendUserOperationWithDelegation({
+                account: agentSmartAccount,
+                calls,
+                entryPointAddress: entryPoint07Address,
+                publicClient,
+            })
+
+            console.log(`[DCA Demo] Atomic UserOp sent: ${userOpHash}`)
+            const receipt = await bundlerClient.waitForUserOperationReceipt({ hash: userOpHash, timeout: 60000 })
+            const txHash = receipt.receipt.transactionHash
+            console.log(`[DCA Demo] Execution confirmed: ${txHash}`)
+
+            return {
+                success: true,
+                transferTxHash: txHash,
+                swapTxHash: txHash, // Same TX
+                amountIn: transferAmount.toString(),
+                amountOut: quote.bestRoute.amountOut,
+                sourceToken: params.sourceTokenSymbol,
+                targetToken: params.targetTokenSymbol
+            }
+
+        } catch (error: any) {
+            console.error(`[DCA Demo] Execution failed:`, error)
+            return {
+                success: false,
+                amountIn: "0",
+                sourceToken: params.sourceTokenSymbol,
+                error: error.message || "Execution failed"
+            }
+        }
+
+
     }
 }
 

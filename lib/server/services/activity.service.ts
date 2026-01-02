@@ -497,3 +497,45 @@ export async function logLimitOrderExecuteActivity(
         }
     })
 }
+/**
+ * Log billing/subscription payment activity (Generic, used for now)
+ */
+// ... (previous code)
+
+/**
+ * Log Trailing Stop execution activity
+ */
+export async function logTrailingStopActivity(
+    walletAddress: string,
+    chainId: number,
+    data: {
+        status: ActivityStatus
+        stackName: string
+        amountIn: string
+        amountOut: string
+        tokenIn: string
+        tokenOut: string
+        txHash?: string
+        error?: string
+    }
+) {
+    return logActivity({
+        walletAddress,
+        chainId,
+        type: 'TRAILING_STOP_EXECUTION' as any, // Cast until prisma generate runs
+        status: data.status,
+        title: data.status === 'SUCCESS' ? 'Trailing Stop Triggered' : 'Trailing Stop Failed',
+        description: data.status === 'SUCCESS'
+            ? `Protected gains: Sold ${data.amountIn} ${data.tokenIn} for ${data.amountOut} ${data.tokenOut}`
+            : `Trailing stop failed: ${data.error}`,
+        txHash: data.txHash,
+        metadata: {
+            stackName: data.stackName,
+            amountIn: data.amountIn,
+            amountOut: data.amountOut,
+            tokenIn: data.tokenIn,
+            tokenOut: data.tokenOut,
+            error: data.error,
+        }
+    })
+}

@@ -49,11 +49,33 @@ const LINEA_POOL_ADDRESSES: Record<string, string> = {
     "0xa219439258ca9da29e9cc4ce5596924745e12b93_0x176211869ca2b568f2a7d4ee941e073a821ee1ff": "0x35521ec62d91375AC9510d1FeEFe254b4B582EA0",
 }
 
+// Ethereum mainnet pool addresses for common pairs
+const ETHEREUM_POOL_ADDRESSES: Record<string, string> = {
+    // WETH/USDC - Uniswap V3 (very high liquidity)
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640",
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48_0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2": "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640",
+
+    // Native ETH (0x0) maps to WETH/USDC
+    "0x0000000000000000000000000000000000000000_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640",
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48_0x0000000000000000000000000000000000000000": "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640",
+}
+
+// Sepolia testnet token addresses → Ethereum mainnet equivalents
+// Used for chart display when on Sepolia
+const SEPOLIA_TO_MAINNET_TOKENS: Record<string, string> = {
+    // USDC: Sepolia → Mainnet
+    "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    // WETH: Sepolia → Mainnet  
+    "0xfff9976782d46cc05630d1f6ebab18b2324d6b14": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    // Native ETH stays as 0x0
+    "0x0000000000000000000000000000000000000000": "0x0000000000000000000000000000000000000000",
+}
+
 // Chain ID to DEX Screener chain slug mapping
 const CHAIN_SLUGS: Record<number, string> = {
     143: "monad",
     59144: "linea",
-    11155111: "sepolia",
+    11155111: "ethereum", // Sepolia → use Ethereum mainnet for charts
     1: "ethereum",
     56: "bsc",
     137: "polygon",
@@ -103,13 +125,24 @@ export function DexScreenerChart({
             const normalizedTo = toTokenAddress.toLowerCase()
 
             // 1. Check hardcoded map first (fastest) - use chain-specific map
-            const key1 = `${normalizedFrom}_${normalizedTo}`
-            const key2 = `${normalizedTo}_${normalizedFrom}`
+            // For Sepolia, convert tokens to mainnet equivalents first
+            let lookupFrom = normalizedFrom
+            let lookupTo = normalizedTo
+
+            if (chainId === 11155111) {
+                lookupFrom = SEPOLIA_TO_MAINNET_TOKENS[normalizedFrom] || normalizedFrom
+                lookupTo = SEPOLIA_TO_MAINNET_TOKENS[normalizedTo] || normalizedTo
+            }
+
+            const key1 = `${lookupFrom}_${lookupTo}`
+            const key2 = `${lookupTo}_${lookupFrom}`
 
             // Get the appropriate pool addresses map based on chain
             const poolAddresses = chainId === 143 ? MONAD_POOL_ADDRESSES
                 : chainId === 59144 ? LINEA_POOL_ADDRESSES
-                    : {}
+                    : chainId === 11155111 ? ETHEREUM_POOL_ADDRESSES // Sepolia uses Ethereum pools
+                        : chainId === 1 ? ETHEREUM_POOL_ADDRESSES
+                            : {}
             const hardcoded = poolAddresses[key1] || poolAddresses[key2]
 
             if (hardcoded) {
