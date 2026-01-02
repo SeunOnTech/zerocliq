@@ -273,7 +273,7 @@ export default function CardStacksTestPage() {
             }
         } catch (e) {
             console.error(e)
-            toast.error("Network Error")
+            toast.error("Network Error", "Failed to connect")
             return false
         } finally {
             setExecutingStackId(null)
@@ -475,18 +475,23 @@ export default function CardStacksTestPage() {
         // Check if newStack is a valid object and NOT a DOM event (which lacks our specific fields)
         if (newStack && newStack.id && typeof newStack.id === 'string') {
             // Format the stack to match the expected UI structure
-            const token = supportedTokens.find(t => t.symbol === newStack.tokenSymbol) || {
-                symbol: newStack.tokenSymbol,
-                name: newStack.tokenSymbol,
-                logoURI: "",
-                decimals: 18,
-                address: newStack.tokenAddress
-            }
+            const foundToken = supportedTokens.find(t => t.symbol === newStack.tokenSymbol)
+            const token: StackCardData['token'] = foundToken
+                ? { ...foundToken, chainId: currentChainId }
+                : {
+                    symbol: newStack.tokenSymbol,
+                    name: newStack.tokenSymbol,
+                    logoURI: "",
+                    decimals: 18,
+                    address: newStack.tokenAddress,
+                    chainId: currentChainId
+                }
             const formattedStack: StackCardData = {
                 id: newStack.id,
                 name: `${newStack.tokenSymbol} Stack`,
                 token,
                 totalBudget: parseFloat(newStack.totalBudget),
+                periodDuration: parseInt(newStack.periodDuration || "86400"),
                 usedToday: 0,
                 expiresAt: new Date(newStack.expiresAt),
                 status: (newStack.status?.toLowerCase() || 'active') as "active" | "paused",
@@ -2523,7 +2528,7 @@ function ConfigureTrailingStopModal({ isOpen, onClose, stack, onSuccess }: Confi
             }
         } catch (e) {
             console.error(e)
-            toast.error("Error activating strategy")
+            toast.error("Error activating strategy", "Please try again")
         } finally {
             setIsSaving(false)
         }
@@ -3863,7 +3868,7 @@ function ConfigureLimitModal({ isOpen, onClose, stack, onSuccess }: ConfigureLim
             try {
                 let fetchAddress = targetToken.address
                 if (priceChainId === 1 && TESTNET_TO_MAINNET_MAP[targetToken.symbol.toUpperCase()]) {
-                    fetchAddress = TESTNET_TO_MAINNET_MAP[targetToken.symbol.toUpperCase()]
+                    fetchAddress = TESTNET_TO_MAINNET_MAP[targetToken.symbol.toUpperCase()] as `0x${string}`
                 }
 
                 const res = await fetch('/api/prices', {
