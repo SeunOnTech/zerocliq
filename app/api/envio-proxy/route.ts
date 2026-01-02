@@ -4,8 +4,12 @@ export async function POST(req: Request) {
     try {
         const body = await req.json();
 
-        // Forward the GraphQL query to the local Envio indexer
-        const response = await fetch('http://127.0.0.1:8080/v1/graphql', {
+        // Forward the GraphQL query to the Envio indexer (Local or Production)
+        //const ENVIO_URL = process.env.NEXT_PUBLIC_ENVIO_API_URL || 'http://127.0.0.1:8080/v1/graphql';
+        const ENVIO_URL = process.env.NEXT_PUBLIC_ENVIO_API_URL  || 'https://indexer.dev.hyperindex.xyz/a30dacf/v1/graphql'
+
+
+        const response = await fetch(ENVIO_URL, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
