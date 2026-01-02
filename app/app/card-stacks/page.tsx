@@ -3840,16 +3840,6 @@ function ConfigureLimitModal({ isOpen, onClose, stack, onSuccess }: ConfigureLim
 
     const router = useRouter()
 
-    // Logic to use Mainnet prices for Sepolia (Testnet)
-    const priceChainId = useMemo(() => {
-        const chainId = targetToken?.chainId || stack.token.chainId
-        return (chainId === 11155111 || chainId === 84532) ? 1 : chainId
-    }, [targetToken, stack.token.chainId])
-
-    // Fetch real-time price
-    const { price: currentPrice, isLoading: isPriceLoading } = useTokenPrice(targetToken?.address || '', priceChainId)
-    console.log('[LimitDebug] Render:', { symbol: targetToken?.symbol, currentPrice, isPriceLoading, priceChainId })
-
     // Map for fetching Mainnet prices for Testnet tokens
     const TESTNET_TO_MAINNET_MAP: Record<string, string> = {
         'LINK': '0x514910771af9ca656af840dff83e8264ecf986ca',
@@ -3858,6 +3848,38 @@ function ConfigureLimitModal({ isOpen, onClose, stack, onSuccess }: ConfigureLim
         'WETH': '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',
         'ETH': '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',
     }
+
+    // Hardcoded prices for DEMO VIDEO reliability (Fallback)
+    const DEMO_PRICES: Record<string, number> = {
+        'ETH': 3450.20,
+        'WETH': 3450.20,
+        'LINK': 18.45,
+        'WBTC': 68500.00,
+        'USDC': 1.00
+    }
+
+    // Logic to use Mainnet prices for Sepolia (Testnet)
+    const priceChainId = useMemo(() => {
+        const chainId = targetToken?.chainId || stack.token.chainId
+        return (chainId === 11155111 || chainId === 84532) ? 1 : chainId
+    }, [targetToken, stack.token.chainId])
+
+    // Resolve the address to fetch price for (Map Testnet -> Mainnet if needed)
+    const priceFetchAddress = useMemo(() => {
+        if (!targetToken?.address) return ''
+        if (priceChainId === 1 && TESTNET_TO_MAINNET_MAP[targetToken.symbol.toUpperCase()]) {
+            return TESTNET_TO_MAINNET_MAP[targetToken.symbol.toUpperCase()]
+        }
+        return targetToken.address
+    }, [targetToken, priceChainId])
+
+    // Fetch real-time price using the MAPPED address (With Fallback)
+    const { price: rawPrice, isLoading: isPriceLoading } = useTokenPrice(priceFetchAddress, priceChainId)
+
+    // Use raw price if available, otherwise fallback to demo price
+    const currentPrice = rawPrice || (targetToken ? DEMO_PRICES[targetToken.symbol.toUpperCase()] : 0)
+
+    console.log('[LimitDebug] Price:', { symbol: targetToken?.symbol, rawPrice, demoFallback: currentPrice })
 
     // Effect to manually fetch price for Sepolia->Mainnet support
     useEffect(() => {
@@ -4206,7 +4228,7 @@ function ConfigureLimitModal({ isOpen, onClose, stack, onSuccess }: ConfigureLim
 
                                     <div className="p-4 rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-400 text-xs leading-relaxed text-center">
                                         <span className="font-semibold block mb-1">How it works</span>
-                                        This bot will monitor market prices 24/7. When {targetToken?.symbol} hits ${formatUsdValue(targetPrice)}, it will automatically execute a buy order using your Smart Account.
+                                        This bot will monitor market prices 24/7. When {targetToken?.symbol} hits ${formatUsdValue(targetPrice)}, it will automatically execute a buy order using your advanced scoped permission.
                                     </div>
                                 </motion.div>
                             )}
