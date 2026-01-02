@@ -19,6 +19,7 @@ import { useAppStore } from "@/store/useAppStore"
 import { useActivityStore } from "@/hooks/useActivityStore"
 import { cn } from "@/lib/utils"
 import { useState, useEffect } from "react"
+import { getTokenLogo } from "@/lib/tokens"
 
 // Demo data for Permissions (leaving for now as requested primarily for Activity)
 
@@ -223,19 +224,17 @@ interface ActiveBotsWidgetProps {
 }
 
 function ActiveBotsWidget({ stacks, isLoading }: ActiveBotsWidgetProps) {
-    const router = useRouter()
-
-    // Filter for active DCA bots
+    // Filter for all active bots (DCA + Others)
     const activeBots = stacks.flatMap(stack =>
         (stack.subCards || [])
-            .filter((card: any) => card.type === "DCA_BOT" || card.name.includes("DCA"))
+            .filter((card: any) => card.status === "ACTIVE" || card.active === true) // Broaden filter
             .map((card: any) => ({
                 ...card,
                 tokenSymbol: stack.tokenSymbol,
                 tokenDecimals: stack.tokenDecimals || 18,
                 stackId: stack.id
             }))
-    )
+    ).sort(() => Math.random() - 0.5).slice(0, 4) // Shuffle and limit to 4 items
 
     if (isLoading) {
         return (
@@ -286,61 +285,70 @@ function ActiveBotsWidget({ stacks, isLoading }: ActiveBotsWidgetProps) {
 
             {/* Bots List */}
             {activeBots.length > 0 ? (
-                <div className="space-y-3 overflow-y-auto max-h-[220px] pr-2 custom-scrollbar">
-                    {activeBots.map((bot: any, i: number) => (
-                        <motion.div
-                            key={i}
-                            initial={{ opacity: 0, x: -10 }}
-                            animate={{ opacity: 1, x: 0 }}
-                            transition={{ delay: i * 0.1 }}
-                            onClick={() => router.push('/app/card-stacks')}
-                            className="p-3 rounded-lg bg-muted/30 border border-border flex items-center justify-between group hover:border-blue-500/30 hover:bg-muted/50 transition-all cursor-pointer"
-                        >
-                            <div className="flex items-center gap-3">
-                                <div className="w-8 h-8 rounded-full bg-blue-500/20 text-blue-500 flex items-center justify-center font-bold text-xs">
-                                    {bot.tokenSymbol?.[0] || "T"}
+                // Removed max-h-[220px] to allow filling space
+                <div className="space-y-3 pr-2 flex-1 overflow-y-auto custom-scrollbar min-h-0">
+                    {activeBots.map((bot: any, i: number) => {
+                        const logoUrl = getTokenLogo(bot.tokenSymbol)
+                        return (
+                            <motion.div
+                                key={i}
+                                initial={{ opacity: 0, x: -10 }}
+                                animate={{ opacity: 1, x: 0 }}
+                                transition={{ delay: i * 0.1 }}
+                                onClick={() => router.push('/app/card-stacks')}
+                                className="p-3 rounded-lg bg-muted/30 border border-border flex items-center gap-3 group hover:border-blue-500/30 hover:bg-muted/50 transition-all cursor-pointer relative overflow-hidden"
+                            >
+                                <div className="shrink-0 w-8 h-8 rounded-full bg-background border border-border flex items-center justify-center overflow-hidden">
+                                    {logoUrl ? (
+                                        <img src={logoUrl} alt={bot.tokenSymbol} className="w-full h-full object-cover" />
+                                    ) : (
+                                        <span className="text-xs font-bold text-muted-foreground">{bot.tokenSymbol?.[0] || "T"}</span>
+                                    )}
                                 </div>
-                                <div>
-                                    <h4 className="text-xs font-bold text-foreground">{bot.tokenSymbol} DCA</h4>
-                                    <div className="flex items-center gap-2">
-                                        <span className="text-[10px] text-muted-foreground flex items-center gap-1">
-                                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                                            Active
-                                        </span>
-                                        <span className="text-[10px] text-muted-foreground">•</span>
-                                        <span className="text-[10px] text-muted-foreground">
+
+                                <div className="flex-1 min-w-0 grid grid-cols-2 gap-2">
+                                    <div className="min-w-0">
+                                        <h4 className="text-xs font-bold text-foreground truncate">{bot.tokenSymbol} {bot.type?.replace('_BOT', '') || 'BOT'}</h4>
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-[10px] text-muted-foreground flex items-center gap-1 shrink-0">
+                                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                                                Active
+                                            </span>
+                                            <span className="text-[10px] text-muted-foreground">•</span>
+                                            <span className="text-[10px] text-muted-foreground truncate">
+                                                {(() => {
+                                                    const config = bot.config as any
+                                                    const dailyLimit = parseFloat(config?.dailyLimit || "0")
+                                                    if (dailyLimit > 0) {
+                                                        const spent = parseFloat(bot.currentSpent || "0") / Math.pow(10, bot.tokenDecimals)
+                                                        const percent = Math.round((spent / dailyLimit) * 100)
+                                                        return `${percent}% Daily Limit`
+                                                    }
+                                                    return `${bot.allocationPercent}% Budget`
+                                                })()}
+                                            </span>
+                                        </div>
+                                    </div>
+
+                                    <div className="text-right min-w-fit pl-2">
+                                        <p className="text-xs font-mono font-medium text-foreground truncate">
                                             {(() => {
-                                                const config = bot.config as any
-                                                const dailyLimit = parseFloat(config?.dailyLimit || "0")
-                                                if (dailyLimit > 0) {
-                                                    const spent = parseFloat(bot.currentSpent || "0") / Math.pow(10, bot.tokenDecimals)
-                                                    const percent = Math.round((spent / dailyLimit) * 100)
-                                                    return `${percent}% Daily Limit`
-                                                }
-                                                return `${bot.allocationPercent}% Budget`
+                                                const spent = parseFloat(bot.currentSpent || "0") / Math.pow(10, bot.tokenDecimals)
+                                                return spent > 0
+                                                    ? `${spent.toFixed(4)} ${bot.tokenSymbol}`
+                                                    : "Waiting"
                                             })()}
-                                        </span>
+                                        </p>
+                                        <p className="text-[10px] text-muted-foreground">spent today</p>
                                     </div>
                                 </div>
-                            </div>
-
-                            <div className="text-right">
-                                <p className="text-xs font-mono font-medium text-foreground">
-                                    {(() => {
-                                        const spent = parseFloat(bot.currentSpent || "0") / Math.pow(10, bot.tokenDecimals)
-                                        return spent > 0
-                                            ? `${spent.toFixed(4)} ${bot.tokenSymbol}`
-                                            : "Waiting"
-                                    })()}
-                                </p>
-                                <p className="text-[10px] text-muted-foreground">spent today</p>
-                            </div>
-                        </motion.div>
-                    ))}
+                            </motion.div >
+                        )
+                    })}
                 </div>
             ) : (
                 <div className="flex-1 flex flex-col items-center justify-center text-center p-4">
-                    <p className="text-xs text-muted-foreground">You have stacks but no active DCA bots.</p>
+                    <p className="text-xs text-muted-foreground">You have stacks but no active bots.</p>
                     <button className="mt-2 text-[10px] text-primary" onClick={() => router.push('/app/card-stacks')}>Enable one now</button>
                 </div>
             )}
