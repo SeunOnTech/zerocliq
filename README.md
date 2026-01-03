@@ -2,7 +2,7 @@
 
 **Imagine an AI agent that manages your portfolio while you sleep—without you ever handing over your private keys.**
 
-ZeroCliq bridges the gap between **Artificial Intelligence** and **On-Chain Security**.
+ZeroCliq bridges the gap between **Artificial Intelligence** and **On-Chain Security**, building on our [earlier work on ZeroClick](https://github.com/SeunOnTech/ZeroClick) and reimagining it for the Agentic era.
 We realized that for AI to be useful in DeFi, it needs more than just intelligence; it needs *safe autonomy*.
 
 By combining **MetaMask Advanced Permissions (ERC-7715)** with our unique **"Card Stack" Architecture**, we created a safer way to use AI.
@@ -88,7 +88,7 @@ Because every stack is powered by a specific delegation:
 
 **This is the missing link between "Cool AI Demo" and "Safe Financial Product."**
 
-## Advanced Permissions (The Engine)
+## Advanced Permissions Usage
 **"One Signature, Infinite Control"**
 
 While the AI provides the *brains*, **MetaMask Advanced Permissions (ERC-7715)** provide the *muscle*.
@@ -102,23 +102,28 @@ This is the engine that allows ZeroCliq to be **Non-Custodial** yet **Autonomous
 > We didn't just use permissions; we built an entire **Permission Orchestration Layer**.
 
 #### 1. The Request Layer (Client-Side)
-*   **[Permission Builder](lib/server/services/permission-builder.service.ts)**
-    *   *See `permission-builder.service.ts`*: Our custom builder that constructs complex `erc20-token-stream` parameters with precise `period`, `maxAmount`, and `tokenAddress`.
-*   **[UI Integration](components/features/ai/IntentExecutionModal.tsx)**
-    *   *See `IntentExecutionModal.tsx`*: The production-grade UI where the `wallet_grantPermissions` RPC method is triggered via the intent flow.
+**Code usage to request Advanced Permissions:**
+*   **[useStreamPermission Hook](lib/hooks/useStreamPermission.ts)** (Line 142)
+    *   Uses `walletClient.requestExecutionPermissions()` with `erc7715ProviderActions` to request `erc20-token-stream` permissions.
+*   **[Card Stacks Page](app/app/card-stacks/page.tsx)** (Lines 908, 2989, 3212)
+    *   Production UI where users create Card Stacks. Calls `requestExecutionPermissions` with session account signer.
+*   **[Permission Builder Service](lib/server/services/permission-builder.service.ts)** (Lines 91, 143)
+    *   Constructs `erc20-token-stream` permission configs with `amountPerSecond`, `maxAmount`, and `tokenAddress`.
 
 #### 2. The Execution Layer (Server-Side)
-This is where the magic happens. We implemented multiple "Redemption Engines" for different strategies:
-*   **[DCA Engine](lib/server/services/dca.service.ts)**
-    *   *See `dca.service.ts`*: Leverages `sendUserOperationWithDelegation` to execute Dollar-Cost Averaging swaps.
-*   **[Subscription Engine](lib/server/services/subscription.service.ts)**
-    *   *See `subscription.service.ts`*: Uses the same permission to execute recurring payments (e.g., Netflix), proving the versatility of the session key.
+**Code usage to redeem Advanced Permissions:**
+*   **[DCA Service](lib/server/services/dca.service.ts)** (Lines 195, 607)
+    *   Uses `bundlerClient.sendUserOperationWithDelegation()` with `erc7710BundlerActions` to execute DCA swaps.
+*   **[Subscription Service](lib/server/services/subscription.service.ts)** (Line 141)
+    *   Uses `sendUserOperationWithDelegation` to execute recurring subscription payments.
+*   **[Execute Transfer API](app/api/card-stacks/execute-transfer/route.ts)** (Line 177)
+    *   Backend API endpoint that redeems permissions using `sendUserOperationWithDelegation`.
 
 #### 3. The Enforcement Layer (Safety)
 *   **[Spending Guardrails](lib/server/services/spending-limit.service.ts)**
-    *   *See `spending-limit.service.ts`*: An additional safety layer that tracks daily limits and "Remaining Allowance" to prevent over-spending even if the permission allows it.
+    *   Tracks daily limits and "Remaining Allowance" to prevent over-spending.
 
-## Phase 5: Envio Intelligence (The Eyes)
+## Envio Usage
 **Real-Time "Proof of Automation"**
 
 To give users confidence, we simply cannot "fire and forget" transactions. We need to show them exactly what the AI is doing.
@@ -138,17 +143,15 @@ We deployed a custom **HyperIndex** on Envio (separate repository) to track ever
 *   **[Hybrid Data Engine](components/features/envio/PaymasterLeaderboard.tsx)**
     *   *See `PaymasterLeaderboard.tsx`*: A sophisticated data layer that blends off-chain simulation with on-chain indexer data to ensure the demo is always populated, even on testnets with low volume.
 
-## The Journey (Social Media)
+## Social Media
 **Building in Public**
 
 We believe the best way to learn is to share. We documented our entire "Zero to Hero" journey building ZeroCliq to inspire others to adopt ERC-7715.
 
 > **Hackathon Track Integration: Best Social Media Presence**
 
-*   **[📱 The ZeroCliq Thread (X/Twitter)](INSERT_LINK_HERE)**
+*   **[📱 The ZeroCliq Thread (X/Twitter)](https://x.com/seunontech/status/2007505240317452765?s=46)**
     *   **The Story:** How we moved from a "Manual DeFi" mindset to an "Agentic" one.
     *   **The Struggle:** Overcoming the complexity of encoding `redeemDelegations` cleanly.
-    *   **The Win:** Showcasing the "Hybrid Intelligence" UI connected to Envio.
-    *   **The Community:** We engaged with **@MetaMaskDev** and the Linea community to gather feedback.
 
 ---
